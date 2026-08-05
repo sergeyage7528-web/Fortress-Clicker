@@ -6,6 +6,9 @@ const AUTOSAVE_INTERVAL := 20.0
 const STAGE_VICTORY_DELAY := 1.8
 const WAVE_DELAY := 1.2
 const HERO_ATTACK_DURATION := 0.22
+const MAX_WAVES_PER_STAGE := 10
+const BASE_ENEMY_HP := 120.0
+const BASE_GOLD_REWARD := 20.0
 const NORMAL_MESSAGE_COLOR := Color("#d9c7a1")
 const UI_PANEL_COLOR := Color("#2c3747")
 const UI_CONTENT_COLOR := Color("#405064")
@@ -16,6 +19,11 @@ const UI_TEXT_COLOR := Color("#f3ead8")
 const UI_MUTED_TEXT_COLOR := Color("#c1b7a2")
 var stage := 1
 var wave := 1
+var enemies_killed: int = 0
+var current_enemy_type := ""
+var current_enemy_max_hp := 0.0
+var current_enemy_reward: int = 0
+var enemy_is_dying := false
 var gold := 0
 var tower_level := 1
 var tower_crit_level := 0
@@ -53,7 +61,10 @@ var info_label: Label
 var gold_label: Label
 var stage_label: Label
 var message_label: Label
+var enemy_label: Label
 var tab_content: Panel
+var upgrade_scroll: ScrollContainer
+var upgrade_list: VBoxContainer
 var start_stage_button: Button
 var retry_button: Button
 var test_console_open := false
@@ -103,6 +114,11 @@ func hero_upgrade_cost(id: String, kind: String) -> int:
 
 func reset_stage_combat(restart: bool) -> void:
 	if restart: wave = 1
+	enemies_killed = 0
+	current_enemy_type = ""
+	current_enemy_max_hp = 0.0
+	current_enemy_reward = 0
+	enemy_is_dying = false
 	fortress_hp = max_fortress()
 	active_hero = selected if owned.has(selected) else ""
 	hero_alive = not active_hero.is_empty()
@@ -161,31 +177,68 @@ func start_stage() -> void:
 	if state != "ready_stage": return
 	state = "battle"
 	start_stage_button.visible = false
-	spawn_wave()
+	spawn_enemy()
 
 func restart_stage() -> void:
 	reset_stage_combat(true)
 	start_stage()
 
-func spawn_wave() -> void:
-	enemies.clear()
-	var is_boss := wave == 10
-	var count := 1 if is_boss else clampi(1 + floori((stage - 1) / 2.0), 1, 4)
-	for i in count:
-		var base_hp := 95.0 + stage * 42.0 + wave * 13.0
-		var boss_mul := 3.4 if is_boss else 1.0
-		var hp := base_hp * boss_mul
-		var position := enemy_spawn_position(i, count)
-		enemies.append({"hp":hp, "max_hp":hp, "damage":(11.0 + stage * 4.0) * (1.8 if is_boss else 1.0), "gold":int(18 + stage * 9 + wave * 3) * (3 if is_boss else 1), "x":position.x, "y":position.y, "boss":is_boss, "attack_cd":1.7 + i * .22, "flash":0.0, "type":rng.randi_range(0, 2)})
-	message_label.text = "БОСС У ВОРОТ!" if is_boss else "Волна %d начинается" % wave
-	message_label.modulate = Color("#ffbc68") if is_boss else NORMAL_MESSAGE_COLOR
+func enemy_type_for_wave() -> String:
+	if wave >= MAX_WAVES_PER_STAGE: return "boss"
+	if wave == 5: return "elite"
+	return "normal"
 
-func enemy_spawn_position(index: int, enemy_count: int) -> Vector2:
-	var x: float = 430.0
-	if enemy_count == 2: x = 390.0 if index == 0 else 470.0
-	elif enemy_count == 3: x = 350.0 if index == 0 else 420.0 if index == 1 else 490.0
-	elif enemy_count >= 4: x = 325.0 if index == 0 else 380.0 if index == 1 else 435.0 if index == 2 else 490.0
-	return Vector2(x, 535.0 + (index % 2) * 35.0)
+func calculate_enemy_stats() -> Dictionary:
+	var enemy_type := enemy_type_for_wave()
+	var hp_multiplier := 5.0 if enemy_type == "boss" else 2.0 if enemy_type == "elite" else 1.0
+	var reward_multiplier := 4.0 if enemy_type == "boss" else 2.0 if enemy_type == "elite" else 1.0
+	var stage_hp_scale := pow(1.18, stage - 1)
+	var wave_hp_scale := 1.0 + float(wave - 1) * 0.08
+	var hp := BASE_ENEMY_HP * stage_hp_scale * wave_hp_scale * hp_multiplier
+	var reward := int(round(BASE_GOLD_REWARD * pow(1.12, stage - 1) * reward_multiplier))
+	var damage_multiplier := 2.2 if enemy_type == "boss" else 1.45 if enemy_type == "elite" else 1.0
+	var display_name := "Вожак стаи" if enemy_type == "boss" else "Закалённый мародёр" if enemy_type == "elite" else "Лесной слизень"
+	return {"type":enemy_type, "name":display_name, "hp":hp, "reward":reward, "damage":(11.0 + stage * 4.0) * damage_multiplier}
+
+func spawn_enemy() -> void:
+	enemies.clear()
+	var stats := calculate_enemy_stats()
+	current_enemy_type = stats.type
+	current_enemy_max_hp = stats.hp
+	current_enemy_reward = stats.reward
+	enemy_is_dying = false
+	enemies.append({"hp":stats.hp, "max_hp":stats.hp, "damage":stats.damage, "gold":stats.reward, "x":430.0, "y":535.0, "boss":current_enemy_type == "boss", "attack_cd":1.7, "flash":0.0, "type":current_enemy_type, "name":stats.name})
+	message_label.text = "БОСС У ВОРОТ!" if current_enemy_type == "boss" else "Волна %d начинается" % wave
+	message_label.modulate = Color("#ffbc68") if current_enemy_type == "boss" else NORMAL_MESSAGE_COLOR
+	update_enemy_ui()
+
+func advance_wave() -> void:
+	if state == "defeat": return
+	if wave >= MAX_WAVES_PER_STAGE:
+		finish_stage()
+		return
+	wave += 1
+	state = "between"
+	spawn_timer = WAVE_DELAY
+	message_label.modulate = NORMAL_MESSAGE_COLOR
+	message_label.text = "Волна %d очищена! Следующий враг приближается…" % (wave - 1)
+	update_enemy_ui()
+
+func advance_stage() -> void:
+	stage += 1
+	wave = 1
+	reset_stage_combat(false)
+	start_stage()
+
+func update_enemy_ui() -> void:
+	if enemy_label == null: return
+	if enemies.is_empty():
+		enemy_label.text = ""
+		return
+	var enemy: Dictionary = enemies[0]
+	var prefix := "БОСС" if enemy.boss else "УСИЛЕННЫЙ ВРАГ" if enemy.type == "elite" else "ВРАГ"
+	enemy_label.text = "%s: %s  •  %d / %d HP" % [prefix, enemy.name, maxf(0.0, enemy.hp), enemy.max_hp]
+	enemy_label.modulate = Color("#ffbe70") if enemy.boss else Color("#e6d7bd")
 
 func _process(delta: float) -> void:
 	autosave_timer += delta
@@ -209,11 +262,13 @@ func _process(delta: float) -> void:
 	elif state == "between":
 		spawn_timer -= delta
 		if spawn_timer <= 0.0:
-			wave += 1; state = "battle"; spawn_wave()
+			state = "battle"
+			spawn_enemy()
 	elif state == "stage_victory":
 		stage_victory_timer -= delta
 		if stage_victory_timer <= 0.0:
-			stage += 1; wave = 1; save_progress(true); reset_stage_combat(false)
+			save_progress(true)
+			advance_stage()
 	if state == "battle":
 		for p in projectiles:
 			if p.hit and not p.resolved:
@@ -277,17 +332,32 @@ func fire_attack(from: Vector2, to: Vector2, damage: float, kind: String, target
 	projectiles.append({"from":from, "to":to, "damage":damage, "kind":kind, "target":target, "crit":crit, "t":0.0, "hit":false, "resolved":false})
 
 func apply_damage_to_enemy(enemy: Dictionary, damage: float, kind: String, crit: bool) -> void:
-	if state != "battle" or not enemies.has(enemy): return
-	enemy.hp -= damage; enemy.flash = .16
+	if state != "battle" or enemy_is_dying or not enemies.has(enemy): return
+	enemy.hp -= damage
+	play_hit_animation(enemy)
 	var damage_color := Color("#ff8b56") if crit else Color("#ffe5a2")
 	var damage_text := "КРИТ! -%d" % damage if crit else "-%d" % damage
 	add_effect(Vector2(enemy.x, enemy.y - 38), damage_text, damage_color)
 	if kind == "magic": add_effect(Vector2(enemy.x, enemy.y), "✦", Color("#c799ff"))
-	if enemy.hp <= 0.0:
-		gold += enemy.gold; mark_save_dirty(); refresh_tab_purchase_states(); add_effect(Vector2(enemy.x, enemy.y - 60), "+%d золота" % enemy.gold, Color("#ffd461")); enemies.erase(enemy)
-		if enemies.is_empty():
-			if wave >= 10: finish_stage()
-			else: state = "between"; spawn_timer = WAVE_DELAY; message_label.modulate = NORMAL_MESSAGE_COLOR; message_label.text = "Волна %d очищена! Следующая приближается…" % wave
+	update_enemy_ui()
+	if enemy.hp <= 0.0: kill_enemy()
+
+func play_hit_animation(enemy: Dictionary) -> void:
+	# A single short flash is reset on each hit and never accumulates on rapid taps.
+	enemy.flash = 0.16
+
+func kill_enemy() -> void:
+	if enemy_is_dying or enemies.is_empty(): return
+	enemy_is_dying = true
+	var enemy: Dictionary = enemies[0]
+	gold += int(enemy.gold)
+	enemies_killed += 1
+	mark_save_dirty()
+	refresh_tab_purchase_states()
+	add_effect(Vector2(enemy.x, enemy.y - 60), "+%d золота" % enemy.gold, Color("#ffd461"))
+	enemies.clear()
+	update_enemy_ui()
+	advance_wave()
 
 func finish_stage() -> void:
 	var reward := 100 + stage * 60
@@ -309,10 +379,9 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		try_tap(event.position)
 
-func try_tap(pos: Vector2) -> void:
+func try_tap(_pos: Vector2) -> void:
 	if state != "battle": return
-	for enemy in enemies:
-		if pos.distance_to(Vector2(enemy.x, enemy.y)) < 62.0: tower_shot(enemy); return
+	if not enemies.is_empty(): tower_shot(enemies[0])
 
 func build_ui() -> void:
 	ui = CanvasLayer.new(); add_child(ui)
@@ -320,13 +389,17 @@ func build_ui() -> void:
 	stage_label = make_label(Vector2(15, 12), Vector2(510, 54), 18, Color("#f5dfa8")); root.add_child(stage_label)
 	info_label = make_label(Vector2(15, 47), Vector2(510, 28), 15, Color("#e6d7bd")); root.add_child(info_label)
 	message_label = make_label(Vector2(30, 98), Vector2(480, 30), 18, NORMAL_MESSAGE_COLOR); message_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; root.add_child(message_label)
+	enemy_label = make_label(Vector2(24, 128), Vector2(492, 26), 14, Color("#e6d7bd")); enemy_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; root.add_child(enemy_label)
 	gold_label = make_label(Vector2(18, 674), Vector2(500, 26), 18, Color("#ffd561")); root.add_child(gold_label)
 	var panel := Panel.new(); panel.position = Vector2(8, 704); panel.size = Vector2(524, 248); panel.add_theme_stylebox_override("panel", make_panel_style(UI_PANEL_COLOR, Color("#718198"), 2)); root.add_child(panel)
 	var tabs := [["Замок", "castle"], ["Герой", "hero"], ["Гарнизон", "garrison"], ["Магазин", "shop"]]
 	for i in tabs.size():
 		var tab_id: String = tabs[i][1]
 		var tab := make_button(tabs[i][0], Vector2(14 + i * 128, 712), func(): set_tab(tab_id)); tab.size = Vector2(122, 34); tab.add_theme_font_size_override("font_size", 12); root.add_child(tab); tab_buttons[tab_id] = tab
-	tab_content = Panel.new(); tab_content.position = Vector2(14, 750); tab_content.size = Vector2(512, 120); tab_content.add_theme_stylebox_override("panel", make_panel_style(UI_CONTENT_COLOR, Color("#8b9bad"), 1)); root.add_child(tab_content)
+	tab_content = Panel.new(); tab_content.position = Vector2(14, 750); tab_content.size = Vector2(512, 120); tab_content.add_theme_stylebox_override("panel", make_panel_style(UI_CONTENT_COLOR, Color("#8b9bad"), 1)); tab_content.mouse_filter = Control.MOUSE_FILTER_STOP; root.add_child(tab_content)
+	upgrade_scroll = ScrollContainer.new(); upgrade_scroll.position = Vector2(4, 4); upgrade_scroll.size = Vector2(504, 112); upgrade_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED; upgrade_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO; upgrade_scroll.mouse_filter = Control.MOUSE_FILTER_STOP; tab_content.add_child(upgrade_scroll)
+	var upgrade_margin := MarginContainer.new(); upgrade_margin.custom_minimum_size = Vector2(496, 0); upgrade_margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL; upgrade_margin.add_theme_constant_override("margin_left", 4); upgrade_margin.add_theme_constant_override("margin_right", 4); upgrade_margin.add_theme_constant_override("margin_top", 3); upgrade_margin.add_theme_constant_override("margin_bottom", 3); upgrade_scroll.add_child(upgrade_margin)
+	upgrade_list = VBoxContainer.new(); upgrade_list.custom_minimum_size = Vector2(488, 0); upgrade_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL; upgrade_list.add_theme_constant_override("separation", 6); upgrade_margin.add_child(upgrade_list)
 	start_stage_button = make_button("Начать стадию 1", Vector2(16, 878), start_stage); start_stage_button.size = Vector2(250, 58); root.add_child(start_stage_button)
 	retry_button = make_button("Начать заново", Vector2(274, 878), restart_stage); retry_button.size = Vector2(250, 58); retry_button.visible = false; root.add_child(retry_button)
 	if OS.is_debug_build(): build_test_console(root)
@@ -421,16 +494,16 @@ func test_start_stage() -> void:
 
 func test_start_specific_wave(target_wave: int) -> void:
 	if state == "defeat": test_finish("Сначала перезапустите стадию"); return
-	wave = clampi(target_wave, 1, 10); enemies.clear(); projectiles.clear(); state = "battle"; spawn_wave(); test_finish("Запущена волна %d" % wave)
+	wave = clampi(target_wave, 1, MAX_WAVES_PER_STAGE); enemies.clear(); projectiles.clear(); state = "battle"; spawn_enemy(); test_finish("Запущена волна %d" % wave)
 
 func test_next_wave() -> void:
-	if wave >= 10: test_start_specific_wave(10)
+	if wave >= MAX_WAVES_PER_STAGE: test_start_specific_wave(MAX_WAVES_PER_STAGE)
 	else: test_start_specific_wave(wave + 1)
 
 func test_skip_wave() -> void:
 	if state == "defeat": test_finish("Крепость разрушена"); return
 	enemies.clear(); projectiles.clear()
-	if wave >= 10: finish_stage(); test_finish("Босс пропущен")
+	if wave >= MAX_WAVES_PER_STAGE: finish_stage(); test_finish("Босс пропущен")
 	else: test_start_specific_wave(wave + 1)
 
 func test_next_stage() -> void:
@@ -526,28 +599,35 @@ func make_button(text_value: String, pos: Vector2, callback: Callable) -> Button
 	return button
 
 func set_tab(tab: String) -> void:
-	active_tab = tab; update_tab_styles(); refresh_tab()
+	active_tab = tab; update_tab_styles(); refresh_tab(false)
 
 func clear_tab() -> void:
-	for child in tab_content.get_children(): child.queue_free()
+	if upgrade_list == null: return
+	for child in upgrade_list.get_children(): child.queue_free()
 
-func add_tab_button(text_value: String, index: int, callback: Callable, availability := "available", purchase_cost := -1) -> void:
-	var has_header := (active_tab == "hero" and not selected.is_empty() and owned.has(selected)) or (active_tab == "garrison" and barracks_open)
-	var y := (22 if has_header else 5) + (index / 2) * (32 if has_header else 35)
-	var button := make_button(text_value, Vector2(8 + (index % 2) * 250, y), callback)
-	button.size = Vector2(246, 31); button.add_theme_font_size_override("font_size", 9); apply_upgrade_button_state(button, availability); button.disabled = availability != "available" or state == "defeat"
+func add_tab_button(text_value: String, _index: int, callback: Callable, availability := "available", purchase_cost := -1) -> void:
+	var row := PanelContainer.new(); row.custom_minimum_size = Vector2(0, 52); row.size_flags_horizontal = Control.SIZE_EXPAND_FILL; row.add_theme_stylebox_override("panel", make_panel_style(Color("#485669"), Color("#8798ab"), 1)); upgrade_list.add_child(row)
+	var button := Button.new(); button.name = "PurchaseButton"; button.text = text_value; button.custom_minimum_size = Vector2(0, 50); button.size_flags_horizontal = Control.SIZE_EXPAND_FILL; button.add_theme_font_size_override("font_size", 11); button.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART; apply_regular_button_style(button); apply_upgrade_button_state(button, availability); button.disabled = availability != "available" or state == "defeat"; button.pressed.connect(callback)
 	if purchase_cost >= 0:
 		button.set_meta("purchase_cost", purchase_cost)
 		button.set_meta("maximum", availability == "maximum")
-	tab_content.add_child(button)
+	row.add_child(button)
 
-func refresh_tab() -> void:
-	if tab_content == null: return
+func add_tab_label(text_value: String, font_size: int, color: Color) -> void:
+	var label := Label.new(); label.text = text_value; label.custom_minimum_size = Vector2(0, 28); label.size_flags_horizontal = Control.SIZE_EXPAND_FILL; label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART; label.add_theme_font_size_override("font_size", font_size); label.add_theme_color_override("font_color", color); label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER; upgrade_list.add_child(label)
+
+func refresh_tab(keep_scroll := true) -> void:
+	if upgrade_list == null: return
+	var saved_scroll := upgrade_scroll.scroll_vertical if keep_scroll else 0
 	clear_tab()
 	if active_tab == "castle": build_castle_tab()
 	elif active_tab == "hero": build_hero_tab()
 	elif active_tab == "garrison": build_garrison_tab()
 	else: build_shop_tab()
+	call_deferred("restore_upgrade_scroll", saved_scroll)
+
+func restore_upgrade_scroll(saved_scroll: int) -> void:
+	if upgrade_scroll != null: upgrade_scroll.scroll_vertical = saved_scroll
 
 func price_text(cost: int, is_maximum := false) -> String:
 	if is_maximum: return "Максимум"
@@ -558,10 +638,10 @@ func purchase_state(cost: int, is_maximum := false) -> String:
 	return "available" if gold >= cost else "unavailable"
 
 func refresh_tab_purchase_states() -> void:
-	if tab_content == null: return
-	for child in tab_content.get_children():
-		if not child is Button or not child.has_meta("purchase_cost"): continue
-		var button := child as Button
+	if upgrade_list == null: return
+	for row in upgrade_list.get_children():
+		var button := row.get_node_or_null("PurchaseButton") as Button
+		if button == null or not button.has_meta("purchase_cost"): continue
 		var cost: int = int(button.get_meta("purchase_cost"))
 		var is_maximum: bool = bool(button.get_meta("maximum"))
 		var availability := purchase_state(cost, is_maximum)
@@ -582,10 +662,10 @@ func build_castle_tab() -> void:
 
 func build_hero_tab() -> void:
 	if selected.is_empty() or not owned.has(selected):
-		var notice := make_label(Vector2(12, 10), Vector2(485, 42), 16, Color("#e6d7bd")); notice.text = "Герой не выбран. Купите героя в магазине."; tab_content.add_child(notice)
+		add_tab_label("Герой не выбран. Купите героя в магазине.", 16, Color("#e6d7bd"))
 		add_tab_button("Открыть магазин героев", 2, func(): set_tab("shop")); return
 	var stats := hero_stats(selected)
-	var title := make_label(Vector2(10, 0), Vector2(500, 20), 12, stats.color); title.text = "%s • HP %d • Урон %d • крит %d%% x%.1f" % [stats.name, stats.hp, stats.damage, stats.crit*100, stats.mult]; tab_content.add_child(title)
+	add_tab_label("%s • HP %d • Урон %d • крит %d%% x%.1f" % [stats.name, stats.hp, stats.damage, stats.crit*100, stats.mult], 12, stats.color)
 	var kinds = ["damage", "health", "crit", "mult", "speed"]
 	var names = ["Урон", "Здоровье", "Крит шанс", "Крит множ.", "Скорость"]
 	var values = ["%d → %d" % [stats.damage, stats.damage+7], "%d → %d" % [stats.hp, stats.hp+35], "%d%% → %d%%" % [stats.crit*100, (stats.crit+.03)*100], "x%.1f → x%.1f" % [stats.mult, stats.mult+.2], "%.2fс → %.2fс" % [stats.cooldown, maxf(.22, stats.cooldown-.05)]]
@@ -598,10 +678,10 @@ func build_hero_tab() -> void:
 
 func build_garrison_tab() -> void:
 	if not barracks_open:
-		var notice := make_label(Vector2(12, 8), Vector2(485, 38), 15, Color("#e6d7bd")); notice.text = "Гарнизона нет. Откройте казармы и наймите стражника."; tab_content.add_child(notice)
+		add_tab_label("Гарнизона нет. Откройте казармы и наймите стражника.", 15, Color("#e6d7bd"))
 		var cost := 220
 		add_tab_button("Открыть казармы + стражник | %s" % price_text(cost), 2, open_barracks, purchase_state(cost), cost); return
-	var title := make_label(Vector2(10, 0), Vector2(500, 18), 12, Color("#9fc8a0")); title.text = "Стражник у ворот • следующее пополнение: %s" % garrison_next_unit(); tab_content.add_child(title)
+	add_tab_label("Стражник у ворот • следующее пополнение: %s" % garrison_next_unit(), 12, Color("#9fc8a0"))
 	var garrison_crit_maxed: bool = garrison_crit_chance() >= 1.0
 	var garrison_crit_text := "Крит ур.%d | 100%% | Максимум" % garrison_crit_level if garrison_crit_maxed else "Крит ур.%d | %d%% → %d%% | %s" % [garrison_crit_level, garrison_crit_chance()*100, minf(1.0, garrison_crit_chance()+.03)*100, price_text(barracks_cost("crit"))]
 	var data = [["level", "Казармы ур.%d | след.: %s | %s" % [barracks_level, garrison_next_unit(), price_text(barracks_cost("level"))]], ["damage", "Урон ур.%d | %d → %d | %s" % [garrison_damage_level, garrison_damage(), garrison_damage()+6, price_text(barracks_cost("damage"))]], ["health", "Здоровье ур.%d | %d → %d | %s" % [garrison_health_level, garrison_max_health(), garrison_max_health()+28, price_text(barracks_cost("health"))]], ["crit", garrison_crit_text], ["speed", "Скорость ур.%d | %.2fс → %.2fс | %s" % [garrison_speed_level, garrison_cooldown(), maxf(.25,garrison_cooldown()-.06), price_text(barracks_cost("speed"))]]]
@@ -672,7 +752,7 @@ func shop_hero(id: String) -> void:
 
 func update_hud() -> void:
 	if stage_label == null: return
-	stage_label.text = "СТАДИЯ %d   •   ВОЛНА %d / 10" % [stage, wave]
+	stage_label.text = "СТАДИЯ %d   •   ВОЛНА %d / %d" % [stage, wave, MAX_WAVES_PER_STAGE]
 	var hero_name: String = hero_stats(active_hero).name if hero_alive else "Герой не выбран" if active_hero.is_empty() else "%s (пал)" % hero_stats(active_hero).name
 	info_label.text = "Крепость %d/%d  броня -%d     %s" % [max(0, fortress_hp), max_fortress(), fortress_armor(), hero_name]
 	gold_label.text = "✦ %d золота" % gold
@@ -681,9 +761,12 @@ func update_hud() -> void:
 	retry_button.visible = state == "defeat"
 	for tab_id in tab_buttons:
 		tab_buttons[tab_id].disabled = state == "defeat"
-	for child in tab_content.get_children():
-		if child is Button and state == "defeat": child.disabled = true
+	if upgrade_list != null:
+		for row in upgrade_list.get_children():
+			var purchase_button := row.get_node_or_null("PurchaseButton") as Button
+			if purchase_button != null and state == "defeat": purchase_button.disabled = true
 	if test_console_open: refresh_test_status()
+	update_enemy_ui()
 
 func mark_save_dirty() -> void:
 	save_dirty = true
@@ -776,6 +859,7 @@ func _draw() -> void:
 	for unit in garrison_units:
 		if unit.alive: draw_unit(Vector2(unit.x, unit.y), Color("#93bc79") if unit.kind == "archer" else Color("#adadba") if unit.kind == "knight" else Color("#bbb48d"), unit.kind)
 	for enemy in enemies: draw_enemy(enemy)
+	draw_enemy_health_bar()
 	for projectile in projectiles: draw_projectile(projectile)
 	for fx in effects:
 		var alpha := clampf(fx.life/.85,0.0,1.0); var text_color: Color = fx.color; text_color.a = alpha
@@ -790,11 +874,20 @@ func draw_unit(pos: Vector2, color: Color, kind: String) -> void:
 	else: draw_line(pos+Vector2(10,0),pos+Vector2(22,-16),Color("#e5e3d0"),3)
 
 func draw_enemy(enemy: Dictionary) -> void:
-	var pos := Vector2(enemy.x,enemy.y); var body: Color = Color("#9c4850") if enemy.boss else [Color("#68864b"),Color("#815d91"),Color("#896845")][enemy.type]
+	var pos := Vector2(enemy.x,enemy.y)
+	var body: Color = Color("#9c4850") if enemy.boss else Color("#815d91") if enemy.type == "elite" else Color("#68864b")
 	if enemy.flash > 0: body = Color.WHITE
 	draw_circle(pos+Vector2(0,14),22 if enemy.boss else 17,body); draw_circle(pos+Vector2(0,-12),15 if enemy.boss else 12,body.darkened(.08)); draw_circle(pos+Vector2(-5,-14),2,Color("#ffdb64")); draw_circle(pos+Vector2(5,-14),2,Color("#ffdb64"))
-	var width := 68.0 if enemy.boss else 48.0; draw_rect(Rect2(pos.x-width/2,pos.y-45,width,7),Color("#1b1720")); draw_rect(Rect2(pos.x-width/2+1,pos.y-44,(width-2)*maxf(0,enemy.hp/enemy.max_hp),5),Color("#dc4f4f"))
+	# Health is drawn by the single shared bar above the battlefield.
 	if enemy.boss: draw_string(ThemeDB.fallback_font,pos+Vector2(-24,-56),"БОСС",HORIZONTAL_ALIGNMENT_LEFT,-1,12,Color("#ffbe70"))
+
+func draw_enemy_health_bar() -> void:
+	if enemies.is_empty(): return
+	var enemy: Dictionary = enemies[0]
+	var bar_rect := Rect2(70, 157, 400, 12)
+	draw_rect(bar_rect, Color("#161923"))
+	draw_rect(Rect2(bar_rect.position + Vector2(2, 2), Vector2((bar_rect.size.x - 4.0) * clampf(enemy.hp / enemy.max_hp, 0.0, 1.0), 8)), Color("#d66a4d") if enemy.boss else Color("#c95155"))
+	draw_rect(bar_rect, Color("#ffbe70") if enemy.boss else Color("#8c9aa8"), false, 1.0)
 
 func draw_projectile(projectile: Dictionary) -> void:
 	var pos: Vector2 = projectile.from.lerp(projectile.to,minf(projectile.t,1.0)); var color := Color("#ff764e") if projectile.crit else Color("#ffdc76") if projectile.kind == "tower" else Color("#c994ff") if projectile.kind == "magic" else Color("#e7e2c5")
