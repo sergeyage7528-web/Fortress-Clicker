@@ -127,6 +127,10 @@ func capped_gold_value(value: float) -> int:
 	if is_nan(value) or is_inf(value): return MAX_GOLD
 	return int(clampf(round(value), 0.0, float(MAX_GOLD)))
 
+func add_gold(amount: int) -> void:
+	if amount <= 0: return
+	gold = mini(MAX_GOLD, gold + amount)
+
 func castle_cost(kind: String) -> int:
 	var level := tower_level if kind == "tower" else tower_crit_level if kind == "tower_crit" else tower_crit_mult_level if kind == "tower_mult" else fortress_level if kind == "fortress" else fortress_armor_level
 	var base := 90 if kind == "tower" else 120 if kind == "tower_crit" else 140 if kind == "tower_mult" else 110 if kind == "fortress" else 130
@@ -429,7 +433,7 @@ func kill_enemy(enemy: Dictionary) -> void:
 	if enemy_is_dying or not enemies.has(enemy) or enemy.death_processed: return
 	enemy_is_dying = true
 	enemy.death_processed = true
-	gold += int(enemy.gold)
+	add_gold(int(enemy.gold))
 	enemies_killed += 1
 	mark_save_dirty()
 	refresh_tab_purchase_states()
@@ -454,7 +458,7 @@ func finish_stage() -> void:
 func process_stage_completion(reward: int) -> bool:
 	if stage_completion_processed: return false
 	stage_completion_processed = true
-	gold = mini(MAX_GOLD, gold + reward)
+	add_gold(reward)
 	stage = mini(MAX_STAGE, stage + 1)
 	wave = 1
 	highest_stage_this_run = maxi(highest_stage_this_run, stage)
@@ -586,7 +590,7 @@ func test_finish(notice: String) -> void:
 	if test_notice: test_notice.text = notice
 
 func test_add_gold(amount: int) -> void:
-	gold += amount; test_finish("Добавлено %d золота" % amount)
+	add_gold(amount); test_finish("Добавлено %d золота" % amount)
 
 func test_reset_progress() -> void:
 	var delete_error: Error = SaveManager.delete_save()
