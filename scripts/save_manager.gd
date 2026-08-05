@@ -6,11 +6,17 @@ const TEMP_PATH := "user://fortress_progress.tmp"
 const BACKUP_PATH := "user://fortress_progress.bak"
 const RESTORE_PATH := "user://fortress_progress.restore"
 const SECTION := "progress"
-const MAX_SAVE_VERSION := 4
-const MAX_STAGE := 1000
-const MAX_GOLD := 9000000000000000000
+const MAX_SAVE_VERSION := SaveSchema.VERSION
+const MAX_STAGE := SaveSchema.MAX_STAGE
+const MAX_GOLD := SaveSchema.MAX_GOLD
 
 static func save_game(data: Dictionary, save_path := SAVE_PATH, temp_path := TEMP_PATH, backup_path := BACKUP_PATH) -> Error:
+	var temp_path_absolute := ProjectSettings.globalize_path(temp_path)
+	if FileAccess.file_exists(temp_path):
+		var cleanup_temp_error := DirAccess.remove_absolute(temp_path_absolute)
+		if cleanup_temp_error != OK:
+			push_warning("Не удалось удалить старый временный файл сохранения: %s" % cleanup_temp_error)
+			return cleanup_temp_error
 	var config := ConfigFile.new()
 	for key in data:
 		config.set_value(SECTION, key, data[key])
@@ -18,10 +24,14 @@ static func save_game(data: Dictionary, save_path := SAVE_PATH, temp_path := TEM
 	if save_error != OK:
 		push_warning("Не удалось записать временное сохранение: %s" % save_error)
 		return save_error
+	if load_data_from_path(temp_path, "новое временное").is_empty():
+		DirAccess.remove_absolute(temp_path_absolute)
+		push_warning("Новое временное сохранение не прошло проверку.")
+		return ERR_FILE_CORRUPT
 	var main_path := ProjectSettings.globalize_path(save_path)
-	var temp_path_absolute := ProjectSettings.globalize_path(temp_path)
 	var backup_path_absolute := ProjectSettings.globalize_path(backup_path)
-	if FileAccess.file_exists(save_path):
+	var current_main_data := load_data_from_path(save_path, "текущее основное")
+	if not current_main_data.is_empty():
 		if FileAccess.file_exists(backup_path):
 			var delete_backup_error := DirAccess.remove_absolute(backup_path_absolute)
 			if delete_backup_error != OK:

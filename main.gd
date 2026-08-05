@@ -3,12 +3,12 @@ extends Node2D
 const W := 540.0
 const H := 960.0
 const AUTOSAVE_INTERVAL := 20.0
-const SAVE_VERSION: int = 4
+const SAVE_VERSION: int = SaveSchema.VERSION
 const MAX_STANDARD_UPGRADE_LEVEL: int = 10000
 const MAX_HERO_UPGRADE_LEVEL: int = 10000
 const MAX_PRESTIGE_UPGRADE_LEVEL: int = 1000
-const MAX_STAGE: int = 1000
-const MAX_GOLD: int = 9000000000000000000
+const MAX_STAGE: int = SaveSchema.MAX_STAGE
+const MAX_GOLD: int = SaveSchema.MAX_GOLD
 const MAX_COST_EXPONENT: int = 100
 const STAGE_VICTORY_DELAY := 1.8
 const WAVE_DELAY := 1.2
@@ -129,7 +129,10 @@ func capped_gold_value(value: float) -> int:
 
 func add_gold(amount: int) -> void:
 	if amount <= 0: return
-	gold = mini(MAX_GOLD, gold + amount)
+	if gold >= MAX_GOLD or amount >= MAX_GOLD - gold:
+		gold = MAX_GOLD
+		return
+	gold += amount
 
 func castle_cost(kind: String) -> int:
 	var level := tower_level if kind == "tower" else tower_crit_level if kind == "tower_crit" else tower_crit_mult_level if kind == "tower_mult" else fortress_level if kind == "fortress" else fortress_armor_level
@@ -405,7 +408,9 @@ func fire_attack(from: Vector2, to: Vector2, damage: float, kind: String, target
 	projectiles.append({"from":from, "to":to, "damage":damage, "kind":kind, "target":target, "crit":crit, "generation":battle_generation, "t":0.0, "hit":false, "resolved":false})
 
 func projectile_matches_current_generation(projectile: Dictionary) -> bool:
-	return int(projectile.get("generation", -1)) == battle_generation
+	var generation = projectile.get("generation", -1)
+	if not generation is int: return false
+	return int(generation) == battle_generation
 
 func apply_damage_to_wave(damage: float, kind: String, crit: bool) -> void:
 	if state != "battle" or enemy_is_dying or enemies.is_empty() or damage <= 0.0: return

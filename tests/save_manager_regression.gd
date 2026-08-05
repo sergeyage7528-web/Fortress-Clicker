@@ -15,8 +15,8 @@ func _init() -> void:
 	test_old_projectile_generation()
 	test_maximum_gold()
 	SaveManager.delete_save(TEST_SAVE, TEST_TEMP, TEST_BACKUP, TEST_RESTORE)
-	check(SaveManager.save_game({"version":4, "stage":5, "gold":100}, TEST_SAVE, TEST_TEMP, TEST_BACKUP) == OK, "initial save")
-	check(SaveManager.save_game({"version":4, "stage":6, "gold":200}, TEST_SAVE, TEST_TEMP, TEST_BACKUP) == OK, "backup-producing save")
+	check(SaveManager.save_game({"version":SaveSchema.VERSION, "stage":5, "gold":100}, TEST_SAVE, TEST_TEMP, TEST_BACKUP) == OK, "initial save")
+	check(SaveManager.save_game({"version":SaveSchema.VERSION, "stage":6, "gold":200}, TEST_SAVE, TEST_TEMP, TEST_BACKUP) == OK, "backup-producing save")
 	var corrupt_file := FileAccess.open(TEST_SAVE, FileAccess.WRITE)
 	if corrupt_file != null:
 		corrupt_file.store_string("[broken\n")
@@ -83,6 +83,7 @@ func test_old_projectile_generation() -> void:
 	var game := GameScript.new()
 	game.battle_generation = 7
 	check(not game.projectile_matches_current_generation({"generation":6}), "old projectile generation is rejected")
+	check(not game.projectile_matches_current_generation({"generation":"7"}), "non-integer projectile generation is rejected")
 	check(game.projectile_matches_current_generation({"generation":7}), "current projectile generation is accepted")
 	game.free()
 
@@ -100,8 +101,8 @@ func test_maximum_gold() -> void:
 	game.free()
 
 func test_structurally_invalid_save() -> void:
-	check(SaveManager.save_game({"version":4, "stage":7, "gold":700}, TEST_SAVE, TEST_TEMP, TEST_BACKUP) == OK, "structural test initial save")
-	check(SaveManager.save_game({"version":4, "stage":8, "gold":800}, TEST_SAVE, TEST_TEMP, TEST_BACKUP) == OK, "structural test backup save")
+	check(SaveManager.save_game({"version":SaveSchema.VERSION, "stage":7, "gold":700}, TEST_SAVE, TEST_TEMP, TEST_BACKUP) == OK, "structural test initial save")
+	check(SaveManager.save_game({"version":SaveSchema.VERSION, "stage":8, "gold":800}, TEST_SAVE, TEST_TEMP, TEST_BACKUP) == OK, "structural test backup save")
 	var config := ConfigFile.new()
 	config.set_value("progress", "version", "broken")
 	config.set_value("progress", "stage", "not_a_number")
