@@ -3,6 +3,13 @@ extends Node2D
 const W := 540.0
 const H := 960.0
 const AUTOSAVE_INTERVAL := 20.0
+const SAVE_VERSION: int = 4
+const MAX_STANDARD_UPGRADE_LEVEL: int = 10000
+const MAX_HERO_UPGRADE_LEVEL: int = 10000
+const MAX_PRESTIGE_UPGRADE_LEVEL: int = 1000
+const MAX_STAGE: int = 1000
+const MAX_GOLD: int = 9000000000000000000
+const MAX_COST_EXPONENT: int = 100
 const STAGE_VICTORY_DELAY := 1.8
 const WAVE_DELAY := 1.2
 const HERO_ATTACK_DURATION := 0.22
@@ -67,6 +74,7 @@ var effects: Array[Dictionary] = []
 var state := "ready_stage" # ready_stage, battle, between, stage_victory, defeat
 var spawn_timer := 0.0
 var stage_victory_timer := 0.0
+var stage_completion_processed := false
 var hero_attack_timer := 0.0
 var hero_auto_timer := 0.0
 var garrison_auto_timer := 0.0
@@ -111,15 +119,23 @@ func tower_damage() -> float: return (24.0 + tower_level * 12.0) * prestige_dama
 func tower_crit_chance() -> float: return minf(1.0, tower_crit_level * 0.04)
 func tower_crit_multiplier() -> float: return 1.5 + tower_crit_mult_level * 0.25
 
+func growing_cost(base: int, growth: float, level: int) -> int:
+	var safe_level := clampi(level, 0, MAX_COST_EXPONENT)
+	return int(minf(float(MAX_GOLD), base * pow(growth, safe_level)))
+
+func capped_gold_value(value: float) -> int:
+	if is_nan(value) or is_inf(value): return MAX_GOLD
+	return int(clampf(round(value), 0.0, float(MAX_GOLD)))
+
 func castle_cost(kind: String) -> int:
 	var level := tower_level if kind == "tower" else tower_crit_level if kind == "tower_crit" else tower_crit_mult_level if kind == "tower_mult" else fortress_level if kind == "fortress" else fortress_armor_level
 	var base := 90 if kind == "tower" else 120 if kind == "tower_crit" else 140 if kind == "tower_mult" else 110 if kind == "fortress" else 130
-	return int(base * pow(1.52, level))
+	return growing_cost(base, 1.52, level)
 
 func barracks_cost(kind: String) -> int:
 	var level := barracks_level if kind == "level" else garrison_damage_level if kind == "damage" else garrison_health_level if kind == "health" else garrison_crit_level if kind == "crit" else garrison_speed_level
 	var base := 170 if kind == "level" else 110 if kind == "damage" else 100 if kind == "health" else 130 if kind == "crit" else 120
-	return int(base * pow(1.5, level))
+	return growing_cost(base, 1.5, level)
 
 func hero_upgrade_data(id: String) -> Dictionary:
 	if not hero_upgrades.has(id): hero_upgrades[id] = {"damage":0, "health":0, "crit":0, "mult":0, "speed":0}
@@ -134,7 +150,7 @@ func hero_stats(id: String) -> Dictionary:
 func hero_upgrade_cost(id: String, kind: String) -> int:
 	var up := hero_upgrade_data(id)
 	var base := 100 if kind == "damage" else 90 if kind == "health" else 120 if kind == "crit" else 135 if kind == "mult" else 115
-	return int(base * pow(1.55, up[kind]))
+	return growing_cost(base, 1.55, int(up[kind]))
 
 func reset_stage_combat(restart: bool) -> void:
 	if restart: wave = 1
@@ -152,6 +168,7 @@ func reset_stage_combat(restart: bool) -> void:
 	wave_max_health = 0.0; wave_current_health = 0.0
 	hero_attack_timer = 0.0; hero_auto_timer = 0.0; garrison_auto_timer = 0.0; stage_victory_timer = 0.0
 	state = "ready_stage"
+	stage_completion_processed = false
 	message_label.modulate = NORMAL_MESSAGE_COLOR
 	message_label.text = "Стадия %d готова. Нажмите «Начать стадию»" % stage
 	if tab_content != null: refresh_tab()
@@ -220,7 +237,7 @@ func calculate_enemy_stats() -> Dictionary:
 	var stage_hp_scale := pow(1.18, stage - 1)
 	var wave_hp_scale := 1.0 + float(wave - 1) * 0.08
 	var hp := BASE_ENEMY_HP * stage_hp_scale * wave_hp_scale * hp_multiplier
-	var reward := int(round(BASE_GOLD_REWARD * pow(1.12, stage - 1) * reward_multiplier * prestige_gold_multiplier()))
+	var reward := capped_gold_value(BASE_GOLD_REWARD * pow(1.12, stage - 1) * reward_multiplier * prestige_gold_multiplier())
 	var damage_multiplier := 2.2 if enemy_type == "boss" else 1.45 if enemy_type == "elite" else 1.0
 	var display_name := "Вожак стаи" if enemy_type == "boss" else "Закалённый мародёр" if enemy_type == "elite" else "Лесной слизень"
 	return {"type":enemy_type, "name":display_name, "hp":hp, "reward":reward, "damage":(11.0 + stage * 4.0) * damage_multiplier}
@@ -247,7 +264,7 @@ func spawn_enemy() -> void:
 	var count := enemy_count_for_wave()
 	for i in count:
 		var position := enemy_spawn_position(i, count)
-		enemies.append({"hp":stats.hp, "max_hp":stats.hp, "damage":stats.damage, "gold":stats.reward, "x":position.x, "y":position.y, "boss":current_enemy_type == "boss", "attack_cd":1.7 + i * 0.22, "flash":0.0, "type":current_enemy_type, "name":stats.name})
+		enemies.append({"hp":stats.hp, "max_hp":stats.hp, "damage":stats.damage, "gold":stats.reward, "x":position.x, "y":position.y, "boss":current_enemy_type == "boss", "attack_cd":1.7 + i * 0.22, "flash":0.0, "type":current_enemy_type, "name":stats.name, "death_processed":false})
 	update_wave_health(true)
 	message_label.text = "БОСС У ВОРОТ!" if current_enemy_type == "boss" else "Волна %d начинается" % wave
 	message_label.modulate = Color("#ffbc68") if current_enemy_type == "boss" else NORMAL_MESSAGE_COLOR
@@ -266,7 +283,7 @@ func advance_wave() -> void:
 	update_enemy_ui()
 
 func advance_stage() -> void:
-	stage += 1
+	stage = mini(MAX_STAGE, stage + 1)
 	wave = 1
 	highest_stage_this_run = maxi(highest_stage_this_run, stage)
 	highest_stage_ever = maxi(highest_stage_ever, stage)
@@ -319,13 +336,12 @@ func _process(delta: float) -> void:
 	elif state == "stage_victory":
 		stage_victory_timer -= delta
 		if stage_victory_timer <= 0.0:
-			save_progress(true)
-			advance_stage()
+			begin_prepared_stage()
 	if state == "battle":
 		for p in projectiles:
 			if p.hit and not p.resolved:
 				p.resolved = true
-				if p.generation == battle_generation: apply_damage_to_wave(p.damage, p.kind, p.crit)
+				if projectile_matches_current_generation(p): apply_damage_to_wave(p.damage, p.kind, p.crit)
 	projectiles = projectiles.filter(func(p): return p.t < 1.08)
 	update_hud(); queue_redraw()
 
@@ -384,6 +400,9 @@ func first_garrison_target() -> Dictionary:
 func fire_attack(from: Vector2, to: Vector2, damage: float, kind: String, target: Dictionary, crit: bool) -> void:
 	projectiles.append({"from":from, "to":to, "damage":damage, "kind":kind, "target":target, "crit":crit, "generation":battle_generation, "t":0.0, "hit":false, "resolved":false})
 
+func projectile_matches_current_generation(projectile: Dictionary) -> bool:
+	return int(projectile.get("generation", -1)) == battle_generation
+
 func apply_damage_to_wave(damage: float, kind: String, crit: bool) -> void:
 	if state != "battle" or enemy_is_dying or enemies.is_empty() or damage <= 0.0: return
 	var first_enemy: Dictionary = enemies[0]
@@ -407,8 +426,9 @@ func play_hit_animation(enemy: Dictionary) -> void:
 	enemy.flash = 0.16
 
 func kill_enemy(enemy: Dictionary) -> void:
-	if enemy_is_dying or not enemies.has(enemy): return
+	if enemy_is_dying or not enemies.has(enemy) or enemy.death_processed: return
 	enemy_is_dying = true
+	enemy.death_processed = true
 	gold += int(enemy.gold)
 	enemies_killed += 1
 	mark_save_dirty()
@@ -421,9 +441,30 @@ func kill_enemy(enemy: Dictionary) -> void:
 	if enemies.is_empty(): advance_wave()
 
 func finish_stage() -> void:
-	var reward := 100 + stage * 60
-	gold += reward; save_progress(true); message_label.text = "СТАДИЯ ПРОЙДЕНА! +%d золота" % reward; message_label.modulate = Color("#80e5a2")
-	state = "stage_victory"; stage_victory_timer = STAGE_VICTORY_DELAY
+	var completed_stage := stage
+	var reward := 100 + completed_stage * 60
+	if not process_stage_completion(reward): return
+	mark_save_dirty()
+	save_progress(true)
+	message_label.text = "СТАДИЯ %d ПРОЙДЕНА! +%d золота" % [completed_stage, reward]
+	message_label.modulate = Color("#80e5a2")
+	state = "stage_victory"
+	stage_victory_timer = STAGE_VICTORY_DELAY
+
+func process_stage_completion(reward: int) -> bool:
+	if stage_completion_processed: return false
+	stage_completion_processed = true
+	gold = mini(MAX_GOLD, gold + reward)
+	stage = mini(MAX_STAGE, stage + 1)
+	wave = 1
+	highest_stage_this_run = maxi(highest_stage_this_run, stage)
+	highest_stage_ever = maxi(highest_stage_ever, stage)
+	if stage >= PRESTIGE_UNLOCK_STAGE: prestige_unlocked = true
+	return true
+
+func begin_prepared_stage() -> void:
+	reset_stage_combat(false)
+	start_stage()
 
 func defeat() -> void:
 	state = "defeat"; message_label.text = "КРЕПОСТЬ ПАЛА"; message_label.modulate = Color("#ff5d58")
@@ -784,20 +825,22 @@ func prestige_price_text(cost: int, is_maximum: bool) -> String:
 func build_prestige_tab() -> void:
 	var reward := calculate_prestige_reward()
 	add_tab_label("Осколки Сердца: %d  •  Рекорд этапа: %d" % [heart_shards, highest_stage_ever], 14, Color("#f2cd78"))
-	if not is_prestige_available():
+	if not is_prestige_tab_unlocked():
 		add_prestige_button("Перерождение\nОткроется на этапе %d (сейчас: %d)" % [PRESTIGE_UNLOCK_STAGE, highest_stage_this_run], open_prestige_confirmation, false)
 	else:
-		add_prestige_button("Перерождение\nПолучить: %d Осколка(ов) Сердца" % reward, open_prestige_confirmation, reward > 0)
+		var prestige_ready := can_prestige_now()
+		var prestige_text := "Перерождение\nПолучить: %d Осколка(ов) Сердца" % reward if prestige_ready else "Перерождение\nНужно достичь этапа %d в текущем цикле (сейчас: %d)" % [PRESTIGE_UNLOCK_STAGE, highest_stage_this_run]
+		add_prestige_button(prestige_text, open_prestige_confirmation, prestige_ready and reward > 0)
 	var damage_cost := get_prestige_upgrade_cost(prestige_damage_level)
 	var damage_maxed := prestige_damage_level >= PRESTIGE_DAMAGE_MAX_LEVEL
-	add_prestige_button("Сила Сердца ур.%d/%d\nУрон: +%d%% → +%d%% | %s" % [prestige_damage_level, PRESTIGE_DAMAGE_MAX_LEVEL, prestige_damage_level * 10, mini(PRESTIGE_DAMAGE_MAX_LEVEL, prestige_damage_level + 1) * 10, prestige_price_text(damage_cost, damage_maxed)], buy_prestige_damage_upgrade, not damage_maxed and heart_shards >= damage_cost)
+	add_prestige_button("Сила Сердца ур.%d/%d\nУрон: +%d%% → +%d%% | %s" % [prestige_damage_level, PRESTIGE_DAMAGE_MAX_LEVEL, prestige_damage_level * 10, mini(PRESTIGE_DAMAGE_MAX_LEVEL, prestige_damage_level + 1) * 10, prestige_price_text(damage_cost, damage_maxed)], buy_prestige_damage_upgrade, can_buy_prestige_upgrades() and not damage_maxed and heart_shards >= damage_cost)
 	var gold_cost := get_prestige_upgrade_cost(prestige_gold_level)
 	var gold_maxed := prestige_gold_level >= PRESTIGE_GOLD_MAX_LEVEL
-	add_prestige_button("Знание охотника ур.%d/%d\nЗолото: +%d%% → +%d%% | %s" % [prestige_gold_level, PRESTIGE_GOLD_MAX_LEVEL, prestige_gold_level * 10, mini(PRESTIGE_GOLD_MAX_LEVEL, prestige_gold_level + 1) * 10, prestige_price_text(gold_cost, gold_maxed)], buy_prestige_gold_upgrade, not gold_maxed and heart_shards >= gold_cost)
+	add_prestige_button("Знание охотника ур.%d/%d\nЗолото: +%d%% → +%d%% | %s" % [prestige_gold_level, PRESTIGE_GOLD_MAX_LEVEL, prestige_gold_level * 10, mini(PRESTIGE_GOLD_MAX_LEVEL, prestige_gold_level + 1) * 10, prestige_price_text(gold_cost, gold_maxed)], buy_prestige_gold_upgrade, can_buy_prestige_upgrades() and not gold_maxed and heart_shards >= gold_cost)
 	var start_cost := get_prestige_upgrade_cost(prestige_start_gold_level)
 	var start_maxed := prestige_start_gold_level >= PRESTIGE_START_GOLD_MAX_LEVEL
 	var next_start_level := mini(PRESTIGE_START_GOLD_MAX_LEVEL, prestige_start_gold_level + 1)
-	add_prestige_button("Запасы крепости ур.%d/%d\nСтарт: %d → %d золота | %s" % [prestige_start_gold_level, PRESTIGE_START_GOLD_MAX_LEVEL, prestige_starting_gold(), STARTING_GOLD_VALUES[next_start_level], prestige_price_text(start_cost, start_maxed)], buy_prestige_start_gold_upgrade, not start_maxed and heart_shards >= start_cost)
+	add_prestige_button("Запасы крепости ур.%d/%d\nСтарт: %d → %d золота | %s" % [prestige_start_gold_level, PRESTIGE_START_GOLD_MAX_LEVEL, prestige_starting_gold(), STARTING_GOLD_VALUES[next_start_level], prestige_price_text(start_cost, start_maxed)], buy_prestige_start_gold_upgrade, can_buy_prestige_upgrades() and not start_maxed and heart_shards >= start_cost)
 
 func upgrade_castle(kind: String) -> void:
 	if kind == "tower_crit" and tower_crit_chance() >= 1.0: return
@@ -848,8 +891,14 @@ func shop_hero(id: String) -> void:
 	message_label.modulate = NORMAL_MESSAGE_COLOR
 	save_progress(true); update_hud(); refresh_tab()
 
-func is_prestige_available() -> bool:
-	return prestige_unlocked or highest_stage_ever >= PRESTIGE_UNLOCK_STAGE or highest_stage_this_run >= PRESTIGE_UNLOCK_STAGE
+func is_prestige_tab_unlocked() -> bool:
+	return prestige_unlocked
+
+func can_prestige_now() -> bool:
+	return highest_stage_this_run >= PRESTIGE_UNLOCK_STAGE
+
+func can_buy_prestige_upgrades() -> bool:
+	return is_prestige_tab_unlocked()
 
 func calculate_prestige_reward() -> int:
 	if highest_stage_this_run < PRESTIGE_UNLOCK_STAGE: return 0
@@ -868,7 +917,7 @@ func build_prestige_confirmation(root: Control) -> void:
 	prestige_confirm_button = make_button("Переродиться", Vector2(258, 338), perform_prestige); prestige_confirm_button.size = Vector2(206, 58); panel.add_child(prestige_confirm_button)
 
 func open_prestige_confirmation() -> void:
-	if prestige_in_progress or not is_prestige_available() or prestige_overlay == null: return
+	if prestige_in_progress or not can_prestige_now() or prestige_overlay == null: return
 	var reward := calculate_prestige_reward()
 	if reward <= 0: return
 	prestige_summary.text = "Текущий этап: %d\nМаксимальный этап цикла: %d\n\nВы получите:\n%d Осколка(ов) Сердца\n\nБудут сброшены:\n— золото, этап и волна;\n— герои, гарнизон и обычные улучшения;\n— текущий враг и его здоровье.\n\nСохранятся Осколки, престижные улучшения и рекорд." % [stage, highest_stage_this_run, reward]
@@ -888,7 +937,7 @@ func reset_run_progress() -> void:
 	reset_stage_combat(true)
 
 func perform_prestige() -> void:
-	if prestige_in_progress or not is_prestige_available(): return
+	if prestige_in_progress or not can_prestige_now(): return
 	var reward := calculate_prestige_reward()
 	if reward <= 0: return
 	prestige_in_progress = true
@@ -902,19 +951,19 @@ func perform_prestige() -> void:
 	prestige_in_progress = false
 
 func buy_prestige_damage_upgrade() -> void:
-	if not is_prestige_available() or prestige_damage_level >= PRESTIGE_DAMAGE_MAX_LEVEL: return
+	if not can_buy_prestige_upgrades() or prestige_damage_level >= PRESTIGE_DAMAGE_MAX_LEVEL: return
 	var cost := get_prestige_upgrade_cost(prestige_damage_level)
 	if heart_shards < cost: return
 	heart_shards -= cost; prestige_damage_level += 1; save_progress(true); update_hud(); refresh_tab()
 
 func buy_prestige_gold_upgrade() -> void:
-	if not is_prestige_available() or prestige_gold_level >= PRESTIGE_GOLD_MAX_LEVEL: return
+	if not can_buy_prestige_upgrades() or prestige_gold_level >= PRESTIGE_GOLD_MAX_LEVEL: return
 	var cost := get_prestige_upgrade_cost(prestige_gold_level)
 	if heart_shards < cost: return
 	heart_shards -= cost; prestige_gold_level += 1; save_progress(true); update_hud(); refresh_tab()
 
 func buy_prestige_start_gold_upgrade() -> void:
-	if not is_prestige_available() or prestige_start_gold_level >= PRESTIGE_START_GOLD_MAX_LEVEL: return
+	if not can_buy_prestige_upgrades() or prestige_start_gold_level >= PRESTIGE_START_GOLD_MAX_LEVEL: return
 	var cost := get_prestige_upgrade_cost(prestige_start_gold_level)
 	if heart_shards < cost: return
 	heart_shards -= cost; prestige_start_gold_level += 1; save_progress(true); update_hud(); refresh_tab()
@@ -946,7 +995,7 @@ func _notification(what: int) -> void:
 
 func build_save_data() -> Dictionary:
 	return {
-		"version": 3, "stage": stage, "gold": gold,
+		"version": SAVE_VERSION, "stage": stage, "gold": gold,
 		"highest_stage_this_run": highest_stage_this_run, "highest_stage_ever": highest_stage_ever,
 		"heart_shards": heart_shards, "prestige_unlocked": prestige_unlocked,
 		"prestige_damage_level": prestige_damage_level, "prestige_gold_level": prestige_gold_level, "prestige_start_gold_level": prestige_start_gold_level,
@@ -967,9 +1016,11 @@ func save_progress(force: bool = false) -> void:
 	save_dirty = false
 	autosave_timer = 0.0
 
-func save_int(data: Dictionary, key: String, default_value: int) -> int:
+func load_int_clamped(data: Dictionary, key: String, default_value: int, min_value: int, max_value: int) -> int:
 	var value = data.get(key, default_value)
-	return int(value) if value is int or value is float else default_value
+	if not (value is int or value is float): return default_value
+	if value is float and (is_nan(value) or is_inf(value)): return default_value
+	return clampi(int(value), min_value, max_value)
 
 func save_bool(data: Dictionary, key: String, default_value: bool) -> bool:
 	var value = data.get(key, default_value)
@@ -978,24 +1029,25 @@ func save_bool(data: Dictionary, key: String, default_value: bool) -> bool:
 	return default_value
 
 func apply_save_data(data: Dictionary) -> void:
-	stage = save_int(data, "stage", 1); gold = save_int(data, "gold", 0)
-	highest_stage_this_run = maxi(stage, save_int(data, "highest_stage_this_run", stage))
-	highest_stage_ever = maxi(highest_stage_this_run, save_int(data, "highest_stage_ever", highest_stage_this_run))
-	heart_shards = maxi(0, save_int(data, "heart_shards", 0))
+	stage = load_int_clamped(data, "stage", 1, 1, MAX_STAGE); gold = load_int_clamped(data, "gold", 0, 0, MAX_GOLD)
+	highest_stage_this_run = maxi(stage, load_int_clamped(data, "highest_stage_this_run", stage, 1, MAX_STAGE))
+	highest_stage_ever = maxi(highest_stage_this_run, load_int_clamped(data, "highest_stage_ever", highest_stage_this_run, 1, MAX_STAGE))
+	heart_shards = load_int_clamped(data, "heart_shards", 0, 0, MAX_GOLD)
 	prestige_unlocked = save_bool(data, "prestige_unlocked", false) or highest_stage_ever >= PRESTIGE_UNLOCK_STAGE
-	prestige_damage_level = clampi(save_int(data, "prestige_damage_level", 0), 0, PRESTIGE_DAMAGE_MAX_LEVEL)
-	prestige_gold_level = clampi(save_int(data, "prestige_gold_level", 0), 0, PRESTIGE_GOLD_MAX_LEVEL)
-	prestige_start_gold_level = clampi(save_int(data, "prestige_start_gold_level", 0), 0, PRESTIGE_START_GOLD_MAX_LEVEL)
-	var version := save_int(data, "version", 0)
+	prestige_damage_level = load_int_clamped(data, "prestige_damage_level", 0, 0, mini(PRESTIGE_DAMAGE_MAX_LEVEL, MAX_PRESTIGE_UPGRADE_LEVEL))
+	prestige_gold_level = load_int_clamped(data, "prestige_gold_level", 0, 0, mini(PRESTIGE_GOLD_MAX_LEVEL, MAX_PRESTIGE_UPGRADE_LEVEL))
+	prestige_start_gold_level = load_int_clamped(data, "prestige_start_gold_level", 0, 0, mini(PRESTIGE_START_GOLD_MAX_LEVEL, MAX_PRESTIGE_UPGRADE_LEVEL))
+	var version := load_int_clamped(data, "version", 0, 0, SAVE_VERSION)
 	if version == 0:
-		fortress_level = save_int(data, "fortress", 1); tower_level = save_int(data, "forge", 1)
-		barracks_level = save_int(data, "barracks", 0); barracks_open = barracks_level > 0
+		fortress_level = load_int_clamped(data, "fortress", 1, 1, MAX_STANDARD_UPGRADE_LEVEL); tower_level = load_int_clamped(data, "forge", 1, 1, MAX_STANDARD_UPGRADE_LEVEL)
+		barracks_level = load_int_clamped(data, "barracks", 0, 0, MAX_STANDARD_UPGRADE_LEVEL); barracks_open = barracks_level > 0
 	else:
-		tower_level = save_int(data, "tower_level", 1); tower_crit_level = save_int(data, "tower_crit_level", 0); tower_crit_mult_level = save_int(data, "tower_crit_mult_level", 0)
-		fortress_level = save_int(data, "fortress_level", 1); fortress_armor_level = save_int(data, "fortress_armor_level", 0)
-		barracks_open = save_bool(data, "barracks_open", false); barracks_level = save_int(data, "barracks_level", 0)
-		garrison_damage_level = save_int(data, "garrison_damage_level", 0); garrison_health_level = save_int(data, "garrison_health_level", 0)
-		garrison_crit_level = save_int(data, "garrison_crit_level", 0); garrison_speed_level = save_int(data, "garrison_speed_level", 0)
+		tower_level = load_int_clamped(data, "tower_level", 1, 1, MAX_STANDARD_UPGRADE_LEVEL); tower_crit_level = load_int_clamped(data, "tower_crit_level", 0, 0, MAX_STANDARD_UPGRADE_LEVEL); tower_crit_mult_level = load_int_clamped(data, "tower_crit_mult_level", 0, 0, MAX_STANDARD_UPGRADE_LEVEL)
+		fortress_level = load_int_clamped(data, "fortress_level", 1, 1, MAX_STANDARD_UPGRADE_LEVEL); fortress_armor_level = load_int_clamped(data, "fortress_armor_level", 0, 0, MAX_STANDARD_UPGRADE_LEVEL)
+		barracks_open = save_bool(data, "barracks_open", false); barracks_level = load_int_clamped(data, "barracks_level", 0, 0, MAX_STANDARD_UPGRADE_LEVEL)
+		garrison_damage_level = load_int_clamped(data, "garrison_damage_level", 0, 0, MAX_STANDARD_UPGRADE_LEVEL); garrison_health_level = load_int_clamped(data, "garrison_health_level", 0, 0, MAX_STANDARD_UPGRADE_LEVEL)
+		garrison_crit_level = load_int_clamped(data, "garrison_crit_level", 0, 0, MAX_STANDARD_UPGRADE_LEVEL); garrison_speed_level = load_int_clamped(data, "garrison_speed_level", 0, 0, MAX_STANDARD_UPGRADE_LEVEL)
+	if not barracks_open: barracks_level = 0
 	owned.clear()
 	var stored_owned = data.get("owned", [])
 	if stored_owned is Array:
@@ -1013,8 +1065,8 @@ func apply_save_data(data: Dictionary) -> void:
 			var stored_hero_data = stored_upgrades[hero_id]
 			if not stored_hero_data is Dictionary: continue
 			hero_upgrades[hero_id] = {
-				"damage": save_int(stored_hero_data, "damage", 0), "health": save_int(stored_hero_data, "health", 0),
-				"crit": save_int(stored_hero_data, "crit", 0), "mult": save_int(stored_hero_data, "mult", 0), "speed": save_int(stored_hero_data, "speed", 0)
+				"damage": load_int_clamped(stored_hero_data, "damage", 0, 0, MAX_HERO_UPGRADE_LEVEL), "health": load_int_clamped(stored_hero_data, "health", 0, 0, MAX_HERO_UPGRADE_LEVEL),
+				"crit": load_int_clamped(stored_hero_data, "crit", 0, 0, MAX_HERO_UPGRADE_LEVEL), "mult": load_int_clamped(stored_hero_data, "mult", 0, 0, MAX_HERO_UPGRADE_LEVEL), "speed": load_int_clamped(stored_hero_data, "speed", 0, 0, MAX_HERO_UPGRADE_LEVEL)
 			}
 	for hero_id in owned: hero_upgrade_data(hero_id)
 
