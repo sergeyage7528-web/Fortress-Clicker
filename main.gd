@@ -2,7 +2,6 @@ extends Node2D
 
 const W := 540.0
 const H := 960.0
-const SAVE_PATH := "user://fortress_progress.cfg"
 const AUTOSAVE_INTERVAL := 20.0
 const STAGE_VICTORY_DELAY := 1.8
 const WAVE_DELAY := 1.2
@@ -15,13 +14,6 @@ const UI_BRONZE_COLOR := Color("#6c5944")
 const UI_GOLD_COLOR := Color("#f2cd78")
 const UI_TEXT_COLOR := Color("#f3ead8")
 const UI_MUTED_TEXT_COLOR := Color("#c1b7a2")
-const HEROES := {
-	"knight": {"name":"Рыцарь", "cost":350, "hp":260, "damage":18, "cooldown":0.68, "crit":0.08, "crit_mult":1.7, "color":Color("#bcc8d5"), "attack":"slash", "desc":"Стойкий защитник"},
-	"archer": {"name":"Лучница", "cost":650, "hp":170, "damage":27, "cooldown":0.58, "crit":0.14, "crit_mult":1.6, "color":Color("#9bd06b"), "attack":"arrow", "desc":"Быстрые стрелы"},
-	"berserker": {"name":"Берсерк", "cost":1100, "hp":370, "damage":42, "cooldown":0.82, "crit":0.12, "crit_mult":2.0, "color":Color("#d46b55"), "attack":"axe", "desc":"Сокрушительные удары"},
-	"mage": {"name":"Маг", "cost":1800, "hp":210, "damage":58, "cooldown":0.75, "crit":0.18, "crit_mult":1.8, "color":Color("#a878e0"), "attack":"magic", "desc":"Тёмная магия"}
-}
-
 var stage := 1
 var wave := 1
 var gold := 0
@@ -99,8 +91,8 @@ func hero_upgrade_data(id: String) -> Dictionary:
 	return hero_upgrades[id]
 
 func hero_stats(id: String) -> Dictionary:
-	if id.is_empty() or not HEROES.has(id): return {}
-	var base: Dictionary = HEROES[id]
+	if id.is_empty() or not HeroDatabase.has_hero(id): return {}
+	var base: Dictionary = HeroDatabase.get_hero(id)
 	var up := hero_upgrade_data(id)
 	return {"name":base.name, "hp":base.hp + up.health * 35, "damage":base.damage + up.damage * 7, "crit":minf(1.0, base.crit + up.crit * 0.03), "mult":base.crit_mult + up.mult * 0.2, "cooldown":maxf(0.22, base.cooldown - up.speed * 0.05), "color":base.color, "attack":base.attack, "desc":base.desc}
 
@@ -221,7 +213,7 @@ func _process(delta: float) -> void:
 	elif state == "stage_victory":
 		stage_victory_timer -= delta
 		if stage_victory_timer <= 0.0:
-			stage += 1; wave = 1; save_progress(); reset_stage_combat(false)
+			stage += 1; wave = 1; save_progress(true); reset_stage_combat(false)
 	if state == "battle":
 		for p in projectiles:
 			if p.hit and not p.resolved:
@@ -299,7 +291,7 @@ func apply_damage_to_enemy(enemy: Dictionary, damage: float, kind: String, crit:
 
 func finish_stage() -> void:
 	var reward := 100 + stage * 60
-	gold += reward; save_progress(); message_label.text = "СТАДИЯ ПРОЙДЕНА! +%d золота" % reward; message_label.modulate = Color("#80e5a2")
+	gold += reward; save_progress(true); message_label.text = "СТАДИЯ ПРОЙДЕНА! +%d золота" % reward; message_label.modulate = Color("#80e5a2")
 	state = "stage_victory"; stage_victory_timer = STAGE_VICTORY_DELAY
 
 func defeat() -> void:
@@ -370,7 +362,7 @@ func build_test_console(root: Control) -> void:
 	add_test_group(list, "ГЕРОИ")
 	for id in ["knight", "archer", "berserker", "mage"]:
 		var hero_id: String = id
-		add_test_button(list, "Выдать %s" % HEROES[hero_id].name, func(): test_grant_hero(hero_id))
+		add_test_button(list, "Выдать %s" % HeroDatabase.get_hero(hero_id).name, func(): test_grant_hero(hero_id))
 	add_test_button(list, "Убрать героя", test_remove_hero)
 	add_test_group(list, "ГАРНИЗОН")
 	add_test_button(list, "Открыть казармы", test_open_barracks)
@@ -403,17 +395,19 @@ func close_test_console() -> void:
 
 func refresh_test_status() -> void:
 	if test_status == null: return
-	var hero_name: String = HEROES[selected].name if not selected.is_empty() and HEROES.has(selected) else "нет"
+	var hero_name: String = HeroDatabase.get_hero(selected).name if not selected.is_empty() and HeroDatabase.has_hero(selected) else "нет"
 	test_status.text = "Золото: %d   Стадия: %d   Волна: %d\nБой: %s   Герой: %s   Казармы: %s" % [gold, stage, wave, state, hero_name, "открыты, ур. %d" % barracks_level if barracks_open else "нет"]
 
 func test_finish(notice: String) -> void:
-	save_progress(); update_hud(); refresh_tab(); refresh_test_status()
+	save_progress(true); update_hud(); refresh_tab(); refresh_test_status()
 	if test_notice: test_notice.text = notice
 
 func test_add_gold(amount: int) -> void:
 	gold += amount; test_finish("Добавлено %d золота" % amount)
 
 func test_reset_progress() -> void:
+	var delete_error: Error = SaveManager.delete_save()
+	if delete_error != OK: push_error("Не удалось удалить сохранение: %s" % delete_error)
 	stage = 1; wave = 1; gold = 0
 	tower_level = 1; tower_crit_level = 0; tower_crit_mult_level = 0; fortress_level = 1; fortress_armor_level = 0
 	barracks_open = false; barracks_level = 0; garrison_damage_level = 0; garrison_health_level = 0; garrison_crit_level = 0; garrison_speed_level = 0
@@ -450,7 +444,7 @@ func test_damage_fortress(amount: float) -> void:
 
 func test_grant_hero(id: String) -> void:
 	if not owned.has(id): owned.append(id)
-	hero_upgrade_data(id); selected = id; test_finish("Выдан герой: %s. Вступит в бой со следующей стадии" % HEROES[id].name)
+	hero_upgrade_data(id); selected = id; test_finish("Выдан герой: %s. Вступит в бой со следующей стадии" % HeroDatabase.get_hero(id).name)
 
 func test_remove_hero() -> void:
 	selected = ""; test_finish("Герой убран. Изменение вступит в силу со следующей стадии")
@@ -619,8 +613,8 @@ func build_garrison_tab() -> void:
 
 func build_shop_tab() -> void:
 	var i := 0
-	for id in HEROES:
-		var hero: Dictionary = HEROES[id]
+	for id in HeroDatabase.get_hero_ids():
+		var hero: Dictionary = HeroDatabase.get_hero(id)
 		var status := "Выбрать" if owned.has(id) else "Купить: %d ✦" % hero.cost
 		var hero_id: String = id
 		var purchase_cost: int = -1 if owned.has(hero_id) else hero.cost
@@ -637,7 +631,7 @@ func upgrade_castle(kind: String) -> void:
 	elif kind == "tower_mult": tower_crit_mult_level += 1
 	elif kind == "fortress": fortress_level += 1; fortress_hp += 250
 	else: fortress_armor_level += 1
-	message_label.modulate = NORMAL_MESSAGE_COLOR; message_label.text = "Улучшение завершено!"; save_progress(); update_hud(); refresh_tab()
+	message_label.modulate = NORMAL_MESSAGE_COLOR; message_label.text = "Улучшение завершено!"; save_progress(true); update_hud(); refresh_tab()
 
 func upgrade_hero(kind: String) -> void:
 	if selected.is_empty(): return
@@ -646,11 +640,11 @@ func upgrade_hero(kind: String) -> void:
 	if gold < cost: message_label.text = "Нужно %d золота" % cost; return
 	gold -= cost; hero_upgrade_data(selected)[kind] += 1
 	if kind == "health" and hero_alive and selected == active_hero: hero_hp += 35.0
-	message_label.modulate = NORMAL_MESSAGE_COLOR; message_label.text = "Герой улучшен!"; save_progress(); update_hud(); refresh_tab()
+	message_label.modulate = NORMAL_MESSAGE_COLOR; message_label.text = "Герой улучшен!"; save_progress(true); update_hud(); refresh_tab()
 
 func open_barracks() -> void:
 	if gold < 220: message_label.text = "Нужно 220 золота"; return
-	gold -= 220; barracks_open = true; barracks_level = 1; add_garrison_reinforcements(); message_label.modulate = NORMAL_MESSAGE_COLOR; message_label.text = "Казармы открыты. Стражник вступил в бой!"; save_progress(); update_hud(); refresh_tab()
+	gold -= 220; barracks_open = true; barracks_level = 1; add_garrison_reinforcements(); message_label.modulate = NORMAL_MESSAGE_COLOR; message_label.text = "Казармы открыты. Стражник вступил в бой!"; save_progress(true); update_hud(); refresh_tab()
 
 func upgrade_barracks(kind: String) -> void:
 	if kind == "crit" and garrison_crit_chance() >= 1.0: return
@@ -665,16 +659,16 @@ func upgrade_barracks(kind: String) -> void:
 			if unit.alive: unit.max_hp += 28.0; unit.hp += 28.0
 	elif kind == "crit": garrison_crit_level += 1
 	else: garrison_speed_level += 1
-	message_label.modulate = NORMAL_MESSAGE_COLOR; message_label.text = "Гарнизон улучшен!"; save_progress(); update_hud(); refresh_tab()
+	message_label.modulate = NORMAL_MESSAGE_COLOR; message_label.text = "Гарнизон улучшен!"; save_progress(true); update_hud(); refresh_tab()
 
 func shop_hero(id: String) -> void:
-	var hero: Dictionary = HEROES[id]
+	var hero: Dictionary = HeroDatabase.get_hero(id)
 	if not owned.has(id):
 		if gold < hero.cost: message_label.text = "Нужно %d золота" % hero.cost; return
 		gold -= hero.cost; owned.append(id); hero_upgrade_data(id); message_label.text = "%s куплен!" % hero.name
 	selected = id
 	message_label.modulate = NORMAL_MESSAGE_COLOR
-	save_progress(); update_hud(); refresh_tab()
+	save_progress(true); update_hud(); refresh_tab()
 
 func update_hud() -> void:
 	if stage_label == null: return
@@ -698,33 +692,74 @@ func _notification(what: int) -> void:
 	if what == NOTIFICATION_APPLICATION_PAUSED or what == NOTIFICATION_WM_CLOSE_REQUEST:
 		if save_dirty: save_progress()
 
-func save_progress() -> void:
-	var cfg := ConfigFile.new()
-	cfg.set_value("progress", "version", 2); cfg.set_value("progress", "stage", stage); cfg.set_value("progress", "gold", gold)
-	cfg.set_value("progress", "tower_level", tower_level); cfg.set_value("progress", "tower_crit_level", tower_crit_level); cfg.set_value("progress", "tower_crit_mult_level", tower_crit_mult_level); cfg.set_value("progress", "fortress_level", fortress_level); cfg.set_value("progress", "fortress_armor_level", fortress_armor_level)
-	cfg.set_value("progress", "barracks_open", barracks_open); cfg.set_value("progress", "barracks_level", barracks_level); cfg.set_value("progress", "garrison_damage_level", garrison_damage_level); cfg.set_value("progress", "garrison_health_level", garrison_health_level); cfg.set_value("progress", "garrison_crit_level", garrison_crit_level); cfg.set_value("progress", "garrison_speed_level", garrison_speed_level)
-	cfg.set_value("progress", "owned", owned); cfg.set_value("progress", "selected", selected); cfg.set_value("progress", "hero_upgrades", hero_upgrades)
-	var error := cfg.save(SAVE_PATH)
+func build_save_data() -> Dictionary:
+	return {
+		"version": 2, "stage": stage, "gold": gold,
+		"tower_level": tower_level, "tower_crit_level": tower_crit_level, "tower_crit_mult_level": tower_crit_mult_level,
+		"fortress_level": fortress_level, "fortress_armor_level": fortress_armor_level,
+		"barracks_open": barracks_open, "barracks_level": barracks_level,
+		"garrison_damage_level": garrison_damage_level, "garrison_health_level": garrison_health_level,
+		"garrison_crit_level": garrison_crit_level, "garrison_speed_level": garrison_speed_level,
+		"owned": owned, "selected": selected, "active_hero": active_hero, "hero_upgrades": hero_upgrades
+	}
+
+func save_progress(force: bool = false) -> void:
+	if not force and not save_dirty: return
+	var error: Error = SaveManager.save_game(build_save_data())
 	if error != OK:
 		push_error("Не удалось сохранить прогресс: %s" % error)
 		return
 	save_dirty = false
 	autosave_timer = 0.0
 
-func load_progress() -> void:
-	var cfg := ConfigFile.new()
-	if cfg.load(SAVE_PATH) != OK: return
-	stage = int(cfg.get_value("progress", "stage", 1)); gold = int(cfg.get_value("progress", "gold", 0))
-	var version := int(cfg.get_value("progress", "version", 0))
+func save_int(data: Dictionary, key: String, default_value: int) -> int:
+	var value = data.get(key, default_value)
+	return int(value) if value is int or value is float else default_value
+
+func save_bool(data: Dictionary, key: String, default_value: bool) -> bool:
+	var value = data.get(key, default_value)
+	if value is bool: return value
+	if value is int: return value != 0
+	return default_value
+
+func apply_save_data(data: Dictionary) -> void:
+	stage = save_int(data, "stage", 1); gold = save_int(data, "gold", 0)
+	var version := save_int(data, "version", 0)
 	if version == 0:
-		fortress_level = int(cfg.get_value("progress", "fortress", 1)); tower_level = int(cfg.get_value("progress", "forge", 1)); barracks_level = int(cfg.get_value("progress", "barracks", 0)); barracks_open = barracks_level > 0
+		fortress_level = save_int(data, "fortress", 1); tower_level = save_int(data, "forge", 1)
+		barracks_level = save_int(data, "barracks", 0); barracks_open = barracks_level > 0
 	else:
-		tower_level = int(cfg.get_value("progress", "tower_level", 1)); tower_crit_level = int(cfg.get_value("progress", "tower_crit_level", 0)); tower_crit_mult_level = int(cfg.get_value("progress", "tower_crit_mult_level", 0)); fortress_level = int(cfg.get_value("progress", "fortress_level", 1)); fortress_armor_level = int(cfg.get_value("progress", "fortress_armor_level", 0))
-		barracks_open = bool(cfg.get_value("progress", "barracks_open", false)); barracks_level = int(cfg.get_value("progress", "barracks_level", 0)); garrison_damage_level = int(cfg.get_value("progress", "garrison_damage_level", 0)); garrison_health_level = int(cfg.get_value("progress", "garrison_health_level", 0)); garrison_crit_level = int(cfg.get_value("progress", "garrison_crit_level", 0)); garrison_speed_level = int(cfg.get_value("progress", "garrison_speed_level", 0)); hero_upgrades = cfg.get_value("progress", "hero_upgrades", {})
-	owned.assign(cfg.get_value("progress", "owned", [])); selected = str(cfg.get_value("progress", "selected", ""))
-	owned = owned.filter(func(id): return HEROES.has(id))
+		tower_level = save_int(data, "tower_level", 1); tower_crit_level = save_int(data, "tower_crit_level", 0); tower_crit_mult_level = save_int(data, "tower_crit_mult_level", 0)
+		fortress_level = save_int(data, "fortress_level", 1); fortress_armor_level = save_int(data, "fortress_armor_level", 0)
+		barracks_open = save_bool(data, "barracks_open", false); barracks_level = save_int(data, "barracks_level", 0)
+		garrison_damage_level = save_int(data, "garrison_damage_level", 0); garrison_health_level = save_int(data, "garrison_health_level", 0)
+		garrison_crit_level = save_int(data, "garrison_crit_level", 0); garrison_speed_level = save_int(data, "garrison_speed_level", 0)
+	owned.clear()
+	var stored_owned = data.get("owned", [])
+	if stored_owned is Array:
+		for value in stored_owned:
+			if value is String and HeroDatabase.has_hero(value): owned.append(value)
+	selected = data.get("selected", "") if data.get("selected", "") is String else ""
+	active_hero = data.get("active_hero", "") if data.get("active_hero", "") is String else ""
 	if not owned.has(selected): selected = ""
-	for id in owned: hero_upgrade_data(id)
+	if not owned.has(active_hero): active_hero = ""
+	hero_upgrades.clear()
+	var stored_upgrades = data.get("hero_upgrades", {})
+	if stored_upgrades is Dictionary:
+		for hero_id in stored_upgrades:
+			if not hero_id is String or not HeroDatabase.has_hero(hero_id): continue
+			var stored_hero_data = stored_upgrades[hero_id]
+			if not stored_hero_data is Dictionary: continue
+			hero_upgrades[hero_id] = {
+				"damage": save_int(stored_hero_data, "damage", 0), "health": save_int(stored_hero_data, "health", 0),
+				"crit": save_int(stored_hero_data, "crit", 0), "mult": save_int(stored_hero_data, "mult", 0), "speed": save_int(stored_hero_data, "speed", 0)
+			}
+	for hero_id in owned: hero_upgrade_data(hero_id)
+
+func load_progress() -> void:
+	var data: Dictionary = SaveManager.load_game()
+	if data.is_empty(): return
+	apply_save_data(data)
 
 func _draw() -> void:
 	draw_rect(Rect2(0, 0, W, H), Color("#0b1020")); draw_circle(Vector2(445, 155), 46, Color("#303650"))
