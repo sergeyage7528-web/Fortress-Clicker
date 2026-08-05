@@ -3,6 +3,7 @@ extends Node2D
 const W := 540.0
 const H := 960.0
 const SAVE_PATH := "user://fortress_progress.cfg"
+const AUTOSAVE_INTERVAL := 20.0
 const STAGE_VICTORY_DELAY := 1.8
 const WAVE_DELAY := 1.2
 const HERO_ATTACK_DURATION := 0.22
@@ -67,6 +68,8 @@ var test_console_open := false
 var test_overlay: Control
 var test_status: Label
 var test_notice: Label
+var save_dirty: bool = false
+var autosave_timer: float = 0.0
 
 func _ready() -> void:
 	rng.randomize()
@@ -180,11 +183,21 @@ func spawn_wave() -> void:
 		var base_hp := 95.0 + stage * 42.0 + wave * 13.0
 		var boss_mul := 3.4 if is_boss else 1.0
 		var hp := base_hp * boss_mul
-		enemies.append({"hp":hp, "max_hp":hp, "damage":(11.0 + stage * 4.0) * (1.8 if is_boss else 1.0), "gold":int(18 + stage * 9 + wave * 3) * (3 if is_boss else 1), "x":400.0 + i * 55.0, "y":535.0 + (i % 2) * 35.0, "boss":is_boss, "attack_cd":1.7 + i * .22, "flash":0.0, "type":rng.randi_range(0, 2)})
+		var position := enemy_spawn_position(i, count)
+		enemies.append({"hp":hp, "max_hp":hp, "damage":(11.0 + stage * 4.0) * (1.8 if is_boss else 1.0), "gold":int(18 + stage * 9 + wave * 3) * (3 if is_boss else 1), "x":position.x, "y":position.y, "boss":is_boss, "attack_cd":1.7 + i * .22, "flash":0.0, "type":rng.randi_range(0, 2)})
 	message_label.text = "БОСС У ВОРОТ!" if is_boss else "Волна %d начинается" % wave
 	message_label.modulate = Color("#ffbc68") if is_boss else NORMAL_MESSAGE_COLOR
 
+func enemy_spawn_position(index: int, enemy_count: int) -> Vector2:
+	var x: float = 430.0
+	if enemy_count == 2: x = 390.0 if index == 0 else 470.0
+	elif enemy_count == 3: x = 350.0 if index == 0 else 420.0 if index == 1 else 490.0
+	elif enemy_count >= 4: x = 325.0 if index == 0 else 380.0 if index == 1 else 435.0 if index == 2 else 490.0
+	return Vector2(x, 535.0 + (index % 2) * 35.0)
+
 func _process(delta: float) -> void:
+	autosave_timer += delta
+	if save_dirty and autosave_timer >= AUTOSAVE_INTERVAL: save_progress()
 	if test_console_open:
 		update_hud(); queue_redraw(); return
 	hero_attack_timer = maxf(0.0, hero_attack_timer - delta)
@@ -279,7 +292,7 @@ func apply_damage_to_enemy(enemy: Dictionary, damage: float, kind: String, crit:
 	add_effect(Vector2(enemy.x, enemy.y - 38), damage_text, damage_color)
 	if kind == "magic": add_effect(Vector2(enemy.x, enemy.y), "✦", Color("#c799ff"))
 	if enemy.hp <= 0.0:
-		gold += enemy.gold; save_progress(); refresh_tab(); add_effect(Vector2(enemy.x, enemy.y - 60), "+%d золота" % enemy.gold, Color("#ffd461")); enemies.erase(enemy)
+		gold += enemy.gold; mark_save_dirty(); refresh_tab_purchase_states(); add_effect(Vector2(enemy.x, enemy.y - 60), "+%d золота" % enemy.gold, Color("#ffd461")); enemies.erase(enemy)
 		if enemies.is_empty():
 			if wave >= 10: finish_stage()
 			else: state = "between"; spawn_timer = WAVE_DELAY; message_label.modulate = NORMAL_MESSAGE_COLOR; message_label.text = "Волна %d очищена! Следующая приближается…" % wave
@@ -297,8 +310,12 @@ func add_effect(pos: Vector2, text_value: String, color: Color) -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if test_console_open: return
-	if event is InputEventScreenTouch and event.pressed: try_tap(event.position)
-	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT: try_tap(event.position)
+	# Touch is handled first and returned so one Android tap cannot also become a mouse shot.
+	if event is InputEventScreenTouch:
+		if event.pressed: try_tap(event.position)
+		return
+	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		try_tap(event.position)
 
 func try_tap(pos: Vector2) -> void:
 	if state != "battle": return
@@ -520,11 +537,15 @@ func set_tab(tab: String) -> void:
 func clear_tab() -> void:
 	for child in tab_content.get_children(): child.queue_free()
 
-func add_tab_button(text_value: String, index: int, callback: Callable, availability := "available") -> void:
+func add_tab_button(text_value: String, index: int, callback: Callable, availability := "available", purchase_cost := -1) -> void:
 	var has_header := (active_tab == "hero" and not selected.is_empty() and owned.has(selected)) or (active_tab == "garrison" and barracks_open)
 	var y := (22 if has_header else 5) + (index / 2) * (32 if has_header else 35)
 	var button := make_button(text_value, Vector2(8 + (index % 2) * 250, y), callback)
-	button.size = Vector2(246, 31); button.add_theme_font_size_override("font_size", 9); apply_upgrade_button_state(button, availability); button.disabled = availability != "available" or state == "defeat"; tab_content.add_child(button)
+	button.size = Vector2(246, 31); button.add_theme_font_size_override("font_size", 9); apply_upgrade_button_state(button, availability); button.disabled = availability != "available" or state == "defeat"
+	if purchase_cost >= 0:
+		button.set_meta("purchase_cost", purchase_cost)
+		button.set_meta("maximum", availability == "maximum")
+	tab_content.add_child(button)
 
 func refresh_tab() -> void:
 	if tab_content == null: return
@@ -542,6 +563,19 @@ func purchase_state(cost: int, is_maximum := false) -> String:
 	if is_maximum: return "maximum"
 	return "available" if gold >= cost else "unavailable"
 
+func refresh_tab_purchase_states() -> void:
+	if tab_content == null: return
+	for child in tab_content.get_children():
+		if not child is Button or not child.has_meta("purchase_cost"): continue
+		var button := child as Button
+		var cost: int = int(button.get_meta("purchase_cost"))
+		var is_maximum: bool = bool(button.get_meta("maximum"))
+		var availability := purchase_state(cost, is_maximum)
+		if availability == "available": button.text = button.text.replace("Нужно %d золота" % cost, "%d золота" % cost)
+		elif availability == "unavailable" and not button.text.contains("Нужно %d золота" % cost): button.text = button.text.replace("%d золота" % cost, "Нужно %d золота" % cost)
+		apply_upgrade_button_state(button, availability)
+		button.disabled = availability != "available" or state == "defeat"
+
 func build_castle_tab() -> void:
 	var tower_crit_maxed: bool = tower_crit_chance() >= 1.0
 	var tower_crit_text := "Крит башни ур.%d | 100%% | Максимум" % tower_crit_level if tower_crit_maxed else "Крит башни ур.%d | %d%% → %d%% | %s" % [tower_crit_level, tower_crit_chance()*100, minf(1.0, tower_crit_chance()+.04)*100, price_text(castle_cost("tower_crit"))]
@@ -549,7 +583,8 @@ func build_castle_tab() -> void:
 	for i in data.size():
 		var kind: String = data[i][0]
 		var is_maximum: bool = kind == "tower_crit" and tower_crit_maxed
-		add_tab_button(data[i][1], i, func(): upgrade_castle(kind), purchase_state(castle_cost(kind), is_maximum))
+		var cost := castle_cost(kind)
+		add_tab_button(data[i][1], i, func(): upgrade_castle(kind), purchase_state(cost, is_maximum), cost)
 
 func build_hero_tab() -> void:
 	if selected.is_empty() or not owned.has(selected):
@@ -565,13 +600,13 @@ func build_hero_tab() -> void:
 		var kind: String = kinds[i]
 		var is_maximum: bool = kind == "crit" and stats.crit >= 1.0
 		if kind == "crit": values[i] = "100%% | Максимум" if is_maximum else "%d%% → %d%%" % [stats.crit*100, minf(1.0, stats.crit+.03)*100]
-		add_tab_button("%s ур.%d | %s | %s" % [names[i], hero_upgrade_data(selected)[kind], values[i], price_text(cost, is_maximum)], i, func(): upgrade_hero(kind), purchase_state(cost, is_maximum))
+		add_tab_button("%s ур.%d | %s | %s" % [names[i], hero_upgrade_data(selected)[kind], values[i], price_text(cost, is_maximum)], i, func(): upgrade_hero(kind), purchase_state(cost, is_maximum), cost)
 
 func build_garrison_tab() -> void:
 	if not barracks_open:
 		var notice := make_label(Vector2(12, 8), Vector2(485, 38), 15, Color("#e6d7bd")); notice.text = "Гарнизона нет. Откройте казармы и наймите стражника."; tab_content.add_child(notice)
 		var cost := 220
-		add_tab_button("Открыть казармы + стражник | %s" % price_text(cost), 2, open_barracks, purchase_state(cost)); return
+		add_tab_button("Открыть казармы + стражник | %s" % price_text(cost), 2, open_barracks, purchase_state(cost), cost); return
 	var title := make_label(Vector2(10, 0), Vector2(500, 18), 12, Color("#9fc8a0")); title.text = "Стражник у ворот • следующее пополнение: %s" % garrison_next_unit(); tab_content.add_child(title)
 	var garrison_crit_maxed: bool = garrison_crit_chance() >= 1.0
 	var garrison_crit_text := "Крит ур.%d | 100%% | Максимум" % garrison_crit_level if garrison_crit_maxed else "Крит ур.%d | %d%% → %d%% | %s" % [garrison_crit_level, garrison_crit_chance()*100, minf(1.0, garrison_crit_chance()+.03)*100, price_text(barracks_cost("crit"))]
@@ -579,7 +614,8 @@ func build_garrison_tab() -> void:
 	for i in data.size():
 		var kind: String = data[i][0]
 		var is_maximum: bool = kind == "crit" and garrison_crit_maxed
-		add_tab_button(data[i][1], i, func(): upgrade_barracks(kind), purchase_state(barracks_cost(kind), is_maximum))
+		var cost := barracks_cost(kind)
+		add_tab_button(data[i][1], i, func(): upgrade_barracks(kind), purchase_state(cost, is_maximum), cost)
 
 func build_shop_tab() -> void:
 	var i := 0
@@ -587,7 +623,8 @@ func build_shop_tab() -> void:
 		var hero: Dictionary = HEROES[id]
 		var status := "Выбрать" if owned.has(id) else "Купить: %d ✦" % hero.cost
 		var hero_id: String = id
-		add_tab_button("%s | HP %d • Урон %d • %s" % [hero.name, hero.hp, hero.damage, status], i, func(): shop_hero(hero_id), "available" if owned.has(hero_id) else purchase_state(hero.cost))
+		var purchase_cost: int = -1 if owned.has(hero_id) else hero.cost
+		add_tab_button("%s | HP %d • Урон %d • %s" % [hero.name, hero.hp, hero.damage, status], i, func(): shop_hero(hero_id), "available" if owned.has(hero_id) else purchase_state(hero.cost), purchase_cost)
 		i += 1
 
 func upgrade_castle(kind: String) -> void:
@@ -654,12 +691,25 @@ func update_hud() -> void:
 		if child is Button and state == "defeat": child.disabled = true
 	if test_console_open: refresh_test_status()
 
+func mark_save_dirty() -> void:
+	save_dirty = true
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_APPLICATION_PAUSED or what == NOTIFICATION_WM_CLOSE_REQUEST:
+		if save_dirty: save_progress()
+
 func save_progress() -> void:
 	var cfg := ConfigFile.new()
 	cfg.set_value("progress", "version", 2); cfg.set_value("progress", "stage", stage); cfg.set_value("progress", "gold", gold)
 	cfg.set_value("progress", "tower_level", tower_level); cfg.set_value("progress", "tower_crit_level", tower_crit_level); cfg.set_value("progress", "tower_crit_mult_level", tower_crit_mult_level); cfg.set_value("progress", "fortress_level", fortress_level); cfg.set_value("progress", "fortress_armor_level", fortress_armor_level)
 	cfg.set_value("progress", "barracks_open", barracks_open); cfg.set_value("progress", "barracks_level", barracks_level); cfg.set_value("progress", "garrison_damage_level", garrison_damage_level); cfg.set_value("progress", "garrison_health_level", garrison_health_level); cfg.set_value("progress", "garrison_crit_level", garrison_crit_level); cfg.set_value("progress", "garrison_speed_level", garrison_speed_level)
-	cfg.set_value("progress", "owned", owned); cfg.set_value("progress", "selected", selected); cfg.set_value("progress", "hero_upgrades", hero_upgrades); cfg.save(SAVE_PATH)
+	cfg.set_value("progress", "owned", owned); cfg.set_value("progress", "selected", selected); cfg.set_value("progress", "hero_upgrades", hero_upgrades)
+	var error := cfg.save(SAVE_PATH)
+	if error != OK:
+		push_error("Не удалось сохранить прогресс: %s" % error)
+		return
+	save_dirty = false
+	autosave_timer = 0.0
 
 func load_progress() -> void:
 	var cfg := ConfigFile.new()
