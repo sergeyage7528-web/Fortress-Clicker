@@ -9,6 +9,11 @@ const HERO_ATTACK_DURATION := 0.22
 const MAX_WAVES_PER_STAGE := 10
 const BASE_ENEMY_HP := 120.0
 const BASE_GOLD_REWARD := 20.0
+const PRESTIGE_UNLOCK_STAGE: int = 10
+const PRESTIGE_DAMAGE_MAX_LEVEL: int = 20
+const PRESTIGE_GOLD_MAX_LEVEL: int = 20
+const PRESTIGE_START_GOLD_MAX_LEVEL: int = 10
+const STARTING_GOLD_VALUES: Array[int] = [0, 50, 150, 300, 500, 800, 1200, 1800, 2600, 3600, 5000]
 const NORMAL_MESSAGE_COLOR := Color("#d9c7a1")
 const UI_PANEL_COLOR := Color("#2c3747")
 const UI_CONTENT_COLOR := Color("#405064")
@@ -19,6 +24,14 @@ const UI_TEXT_COLOR := Color("#f3ead8")
 const UI_MUTED_TEXT_COLOR := Color("#c1b7a2")
 var stage := 1
 var wave := 1
+var highest_stage_this_run: int = 1
+var highest_stage_ever: int = 1
+var heart_shards: int = 0
+var prestige_unlocked := false
+var prestige_damage_level: int = 0
+var prestige_gold_level: int = 0
+var prestige_start_gold_level: int = 0
+var prestige_in_progress := false
 var enemies_killed: int = 0
 var current_enemy_type := ""
 var current_enemy_max_hp := 0.0
@@ -71,6 +84,9 @@ var test_console_open := false
 var test_overlay: Control
 var test_status: Label
 var test_notice: Label
+var prestige_overlay: Control
+var prestige_summary: Label
+var prestige_confirm_button: Button
 var save_dirty: bool = false
 var autosave_timer: float = 0.0
 
@@ -83,7 +99,11 @@ func _ready() -> void:
 
 func max_fortress() -> float: return 750.0 + fortress_level * 250.0
 func fortress_armor() -> float: return fortress_armor_level * 3.0
-func tower_damage() -> float: return 24.0 + tower_level * 12.0
+func prestige_damage_multiplier() -> float: return 1.0 + prestige_damage_level * 0.10
+func prestige_gold_multiplier() -> float: return 1.0 + prestige_gold_level * 0.10
+func prestige_starting_gold() -> int: return STARTING_GOLD_VALUES[prestige_start_gold_index()]
+func prestige_start_gold_index() -> int: return clampi(prestige_start_gold_level, 0, PRESTIGE_START_GOLD_MAX_LEVEL)
+func tower_damage() -> float: return (24.0 + tower_level * 12.0) * prestige_damage_multiplier()
 func tower_crit_chance() -> float: return minf(1.0, tower_crit_level * 0.04)
 func tower_crit_multiplier() -> float: return 1.5 + tower_crit_mult_level * 0.25
 
@@ -105,7 +125,7 @@ func hero_stats(id: String) -> Dictionary:
 	if id.is_empty() or not HeroDatabase.has_hero(id): return {}
 	var base: Dictionary = HeroDatabase.get_hero(id)
 	var up := hero_upgrade_data(id)
-	return {"name":base.name, "hp":base.hp + up.health * 35, "damage":base.damage + up.damage * 7, "crit":minf(1.0, base.crit + up.crit * 0.03), "mult":base.crit_mult + up.mult * 0.2, "cooldown":maxf(0.22, base.cooldown - up.speed * 0.05), "color":base.color, "attack":base.attack, "desc":base.desc}
+	return {"name":base.name, "hp":base.hp + up.health * 35, "damage":(base.damage + up.damage * 7) * prestige_damage_multiplier(), "crit":minf(1.0, base.crit + up.crit * 0.03), "mult":base.crit_mult + up.mult * 0.2, "cooldown":maxf(0.22, base.cooldown - up.speed * 0.05), "color":base.color, "attack":base.attack, "desc":base.desc}
 
 func hero_upgrade_cost(id: String, kind: String) -> int:
 	var up := hero_upgrade_data(id)
@@ -163,7 +183,7 @@ func add_garrison_reinforcements() -> void:
 	while garrison_unit_count("archer") < desired_archers(): add_garrison_unit("archer", garrison_unit_count("archer"))
 	while garrison_unit_count("knight") < desired_knights(): add_garrison_unit("knight", garrison_unit_count("knight"))
 
-func garrison_damage() -> float: return 10.0 + barracks_level * 3.0 + garrison_damage_level * 6.0
+func garrison_damage() -> float: return (10.0 + barracks_level * 3.0 + garrison_damage_level * 6.0) * prestige_damage_multiplier()
 func garrison_max_health() -> float: return 105.0 + barracks_level * 22.0 + garrison_health_level * 28.0
 func garrison_crit_chance() -> float: return minf(1.0, 0.04 + garrison_crit_level * 0.03)
 func garrison_cooldown() -> float: return maxf(0.25, 0.8 - garrison_speed_level * 0.06)
@@ -195,7 +215,7 @@ func calculate_enemy_stats() -> Dictionary:
 	var stage_hp_scale := pow(1.18, stage - 1)
 	var wave_hp_scale := 1.0 + float(wave - 1) * 0.08
 	var hp := BASE_ENEMY_HP * stage_hp_scale * wave_hp_scale * hp_multiplier
-	var reward := int(round(BASE_GOLD_REWARD * pow(1.12, stage - 1) * reward_multiplier))
+	var reward := int(round(BASE_GOLD_REWARD * pow(1.12, stage - 1) * reward_multiplier * prestige_gold_multiplier()))
 	var damage_multiplier := 2.2 if enemy_type == "boss" else 1.45 if enemy_type == "elite" else 1.0
 	var display_name := "Вожак стаи" if enemy_type == "boss" else "Закалённый мародёр" if enemy_type == "elite" else "Лесной слизень"
 	return {"type":enemy_type, "name":display_name, "hp":hp, "reward":reward, "damage":(11.0 + stage * 4.0) * damage_multiplier}
@@ -227,6 +247,10 @@ func advance_wave() -> void:
 func advance_stage() -> void:
 	stage += 1
 	wave = 1
+	highest_stage_this_run = maxi(highest_stage_this_run, stage)
+	highest_stage_ever = maxi(highest_stage_ever, stage)
+	if stage >= PRESTIGE_UNLOCK_STAGE: prestige_unlocked = true
+	mark_save_dirty()
 	reset_stage_combat(false)
 	start_stage()
 
@@ -372,6 +396,9 @@ func add_effect(pos: Vector2, text_value: String, color: Color) -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if test_console_open: return
+	if prestige_overlay != null and prestige_overlay.visible:
+		if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE: close_prestige_confirmation()
+		return
 	# Touch is handled first and returned so one Android tap cannot also become a mouse shot.
 	if event is InputEventScreenTouch:
 		if event.pressed: try_tap(event.position)
@@ -392,16 +419,17 @@ func build_ui() -> void:
 	enemy_label = make_label(Vector2(24, 128), Vector2(492, 26), 14, Color("#e6d7bd")); enemy_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; root.add_child(enemy_label)
 	gold_label = make_label(Vector2(18, 674), Vector2(500, 26), 18, Color("#ffd561")); root.add_child(gold_label)
 	var panel := Panel.new(); panel.position = Vector2(8, 704); panel.size = Vector2(524, 248); panel.add_theme_stylebox_override("panel", make_panel_style(UI_PANEL_COLOR, Color("#718198"), 2)); root.add_child(panel)
-	var tabs := [["Замок", "castle"], ["Герой", "hero"], ["Гарнизон", "garrison"], ["Магазин", "shop"]]
+	var tabs := [["Замок", "castle"], ["Герой", "hero"], ["Гарнизон", "garrison"], ["Магазин", "shop"], ["Престиж", "prestige"]]
 	for i in tabs.size():
 		var tab_id: String = tabs[i][1]
-		var tab := make_button(tabs[i][0], Vector2(14 + i * 128, 712), func(): set_tab(tab_id)); tab.size = Vector2(122, 34); tab.add_theme_font_size_override("font_size", 12); root.add_child(tab); tab_buttons[tab_id] = tab
+		var tab := make_button(tabs[i][0], Vector2(14 + i * 102, 712), func(): set_tab(tab_id)); tab.size = Vector2(98, 34); tab.add_theme_font_size_override("font_size", 11); root.add_child(tab); tab_buttons[tab_id] = tab
 	tab_content = Panel.new(); tab_content.position = Vector2(14, 750); tab_content.size = Vector2(512, 120); tab_content.add_theme_stylebox_override("panel", make_panel_style(UI_CONTENT_COLOR, Color("#8b9bad"), 1)); tab_content.mouse_filter = Control.MOUSE_FILTER_STOP; root.add_child(tab_content)
 	upgrade_scroll = ScrollContainer.new(); upgrade_scroll.position = Vector2(4, 4); upgrade_scroll.size = Vector2(504, 112); upgrade_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED; upgrade_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO; upgrade_scroll.mouse_filter = Control.MOUSE_FILTER_STOP; tab_content.add_child(upgrade_scroll)
 	var upgrade_margin := MarginContainer.new(); upgrade_margin.custom_minimum_size = Vector2(496, 0); upgrade_margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL; upgrade_margin.add_theme_constant_override("margin_left", 4); upgrade_margin.add_theme_constant_override("margin_right", 4); upgrade_margin.add_theme_constant_override("margin_top", 3); upgrade_margin.add_theme_constant_override("margin_bottom", 3); upgrade_scroll.add_child(upgrade_margin)
 	upgrade_list = VBoxContainer.new(); upgrade_list.custom_minimum_size = Vector2(488, 0); upgrade_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL; upgrade_list.add_theme_constant_override("separation", 6); upgrade_margin.add_child(upgrade_list)
 	start_stage_button = make_button("Начать стадию 1", Vector2(16, 878), start_stage); start_stage_button.size = Vector2(250, 58); root.add_child(start_stage_button)
 	retry_button = make_button("Начать заново", Vector2(274, 878), restart_stage); retry_button.size = Vector2(250, 58); retry_button.visible = false; root.add_child(retry_button)
+	build_prestige_confirmation(root)
 	if OS.is_debug_build(): build_test_console(root)
 	update_tab_styles()
 	refresh_tab()
@@ -481,7 +509,8 @@ func test_add_gold(amount: int) -> void:
 func test_reset_progress() -> void:
 	var delete_error: Error = SaveManager.delete_save()
 	if delete_error != OK: push_error("Не удалось удалить сохранение: %s" % delete_error)
-	stage = 1; wave = 1; gold = 0
+	stage = 1; wave = 1; highest_stage_this_run = 1; highest_stage_ever = 1; gold = 0
+	heart_shards = 0; prestige_unlocked = false; prestige_damage_level = 0; prestige_gold_level = 0; prestige_start_gold_level = 0
 	tower_level = 1; tower_crit_level = 0; tower_crit_mult_level = 0; fortress_level = 1; fortress_armor_level = 0
 	barracks_open = false; barracks_level = 0; garrison_damage_level = 0; garrison_health_level = 0; garrison_crit_level = 0; garrison_speed_level = 0
 	owned.clear(); selected = ""; active_hero = ""; hero_upgrades.clear()
@@ -507,7 +536,8 @@ func test_skip_wave() -> void:
 	else: test_start_specific_wave(wave + 1)
 
 func test_next_stage() -> void:
-	stage += 1; wave = 1; enemies.clear(); projectiles.clear(); reset_stage_combat(false); test_finish("Подготовлена стадия %d" % stage)
+	stage += 1; wave = 1; highest_stage_this_run = maxi(highest_stage_this_run, stage); highest_stage_ever = maxi(highest_stage_ever, stage); if stage >= PRESTIGE_UNLOCK_STAGE: prestige_unlocked = true
+	enemies.clear(); projectiles.clear(); reset_stage_combat(false); test_finish("Подготовлена стадия %d" % stage)
 
 func test_damage_fortress(amount: float) -> void:
 	if state == "defeat": test_finish("Крепость уже разрушена"); return
@@ -623,7 +653,8 @@ func refresh_tab(keep_scroll := true) -> void:
 	if active_tab == "castle": build_castle_tab()
 	elif active_tab == "hero": build_hero_tab()
 	elif active_tab == "garrison": build_garrison_tab()
-	else: build_shop_tab()
+	elif active_tab == "shop": build_shop_tab()
+	else: build_prestige_tab()
 	call_deferred("restore_upgrade_scroll", saved_scroll)
 
 func restore_upgrade_scroll(saved_scroll: int) -> void:
@@ -701,6 +732,32 @@ func build_shop_tab() -> void:
 		add_tab_button("%s | HP %d • Урон %d • %s" % [hero.name, hero.hp, hero.damage, status], i, func(): shop_hero(hero_id), "available" if owned.has(hero_id) else purchase_state(hero.cost), purchase_cost)
 		i += 1
 
+func add_prestige_button(text_value: String, callback: Callable, enabled: bool) -> void:
+	var row := PanelContainer.new(); row.custom_minimum_size = Vector2(0, 68); row.size_flags_horizontal = Control.SIZE_EXPAND_FILL; row.add_theme_stylebox_override("panel", make_panel_style(Color("#4c475e"), Color("#b49a67"), 1)); upgrade_list.add_child(row)
+	var button := Button.new(); button.text = text_value; button.custom_minimum_size = Vector2(0, 66); button.size_flags_horizontal = Control.SIZE_EXPAND_FILL; button.add_theme_font_size_override("font_size", 12); button.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART; apply_regular_button_style(button); button.disabled = not enabled or state == "defeat"; button.pressed.connect(callback); row.add_child(button)
+
+func prestige_price_text(cost: int, is_maximum: bool) -> String:
+	if is_maximum: return "Максимум"
+	return "%d Осколков" % cost if heart_shards >= cost else "Нужно %d Осколков" % cost
+
+func build_prestige_tab() -> void:
+	var reward := calculate_prestige_reward()
+	add_tab_label("Осколки Сердца: %d  •  Рекорд этапа: %d" % [heart_shards, highest_stage_ever], 14, Color("#f2cd78"))
+	if not is_prestige_available():
+		add_prestige_button("Перерождение\nОткроется на этапе %d (сейчас: %d)" % [PRESTIGE_UNLOCK_STAGE, highest_stage_this_run], open_prestige_confirmation, false)
+	else:
+		add_prestige_button("Перерождение\nПолучить: %d Осколка(ов) Сердца" % reward, open_prestige_confirmation, reward > 0)
+	var damage_cost := get_prestige_upgrade_cost(prestige_damage_level)
+	var damage_maxed := prestige_damage_level >= PRESTIGE_DAMAGE_MAX_LEVEL
+	add_prestige_button("Сила Сердца ур.%d/%d\nУрон: +%d%% → +%d%% | %s" % [prestige_damage_level, PRESTIGE_DAMAGE_MAX_LEVEL, prestige_damage_level * 10, mini(PRESTIGE_DAMAGE_MAX_LEVEL, prestige_damage_level + 1) * 10, prestige_price_text(damage_cost, damage_maxed)], buy_prestige_damage_upgrade, not damage_maxed and heart_shards >= damage_cost)
+	var gold_cost := get_prestige_upgrade_cost(prestige_gold_level)
+	var gold_maxed := prestige_gold_level >= PRESTIGE_GOLD_MAX_LEVEL
+	add_prestige_button("Знание охотника ур.%d/%d\nЗолото: +%d%% → +%d%% | %s" % [prestige_gold_level, PRESTIGE_GOLD_MAX_LEVEL, prestige_gold_level * 10, mini(PRESTIGE_GOLD_MAX_LEVEL, prestige_gold_level + 1) * 10, prestige_price_text(gold_cost, gold_maxed)], buy_prestige_gold_upgrade, not gold_maxed and heart_shards >= gold_cost)
+	var start_cost := get_prestige_upgrade_cost(prestige_start_gold_level)
+	var start_maxed := prestige_start_gold_level >= PRESTIGE_START_GOLD_MAX_LEVEL
+	var next_start_level := mini(PRESTIGE_START_GOLD_MAX_LEVEL, prestige_start_gold_level + 1)
+	add_prestige_button("Запасы крепости ур.%d/%d\nСтарт: %d → %d золота | %s" % [prestige_start_gold_level, PRESTIGE_START_GOLD_MAX_LEVEL, prestige_starting_gold(), STARTING_GOLD_VALUES[next_start_level], prestige_price_text(start_cost, start_maxed)], buy_prestige_start_gold_upgrade, not start_maxed and heart_shards >= start_cost)
+
 func upgrade_castle(kind: String) -> void:
 	if kind == "tower_crit" and tower_crit_chance() >= 1.0: return
 	var cost := castle_cost(kind)
@@ -750,12 +807,83 @@ func shop_hero(id: String) -> void:
 	message_label.modulate = NORMAL_MESSAGE_COLOR
 	save_progress(true); update_hud(); refresh_tab()
 
+func is_prestige_available() -> bool:
+	return prestige_unlocked or highest_stage_ever >= PRESTIGE_UNLOCK_STAGE or highest_stage_this_run >= PRESTIGE_UNLOCK_STAGE
+
+func calculate_prestige_reward() -> int:
+	if highest_stage_this_run < PRESTIGE_UNLOCK_STAGE: return 0
+	return maxi(1, int(floor(pow(float(highest_stage_this_run) / 10.0, 1.8))))
+
+func get_prestige_upgrade_cost(level: int) -> int:
+	return int(pow(2.0, level))
+
+func build_prestige_confirmation(root: Control) -> void:
+	prestige_overlay = Control.new(); prestige_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT); prestige_overlay.mouse_filter = Control.MOUSE_FILTER_STOP; prestige_overlay.visible = false; root.add_child(prestige_overlay)
+	var shade := ColorRect.new(); shade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT); shade.color = Color("#05070ce8"); shade.mouse_filter = Control.MOUSE_FILTER_STOP; prestige_overlay.add_child(shade)
+	var panel := Panel.new(); panel.position = Vector2(24, 250); panel.size = Vector2(492, 420); panel.add_theme_stylebox_override("panel", make_panel_style(Color("#344154"), Color("#d0ab64"), 2)); prestige_overlay.add_child(panel)
+	var title := make_label(Vector2(20, 16), Vector2(452, 36), 24, Color("#ffd77d")); title.text = "ПЕРЕРОЖДЕНИЕ"; title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; panel.add_child(title)
+	prestige_summary = make_label(Vector2(28, 66), Vector2(436, 244), 15, Color("#e6d7bd")); prestige_summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART; prestige_summary.vertical_alignment = VERTICAL_ALIGNMENT_TOP; panel.add_child(prestige_summary)
+	var cancel := make_button("Отмена", Vector2(28, 338), close_prestige_confirmation); cancel.size = Vector2(206, 58); panel.add_child(cancel)
+	prestige_confirm_button = make_button("Переродиться", Vector2(258, 338), perform_prestige); prestige_confirm_button.size = Vector2(206, 58); panel.add_child(prestige_confirm_button)
+
+func open_prestige_confirmation() -> void:
+	if prestige_in_progress or not is_prestige_available() or prestige_overlay == null: return
+	var reward := calculate_prestige_reward()
+	if reward <= 0: return
+	prestige_summary.text = "Текущий этап: %d\nМаксимальный этап цикла: %d\n\nВы получите:\n%d Осколка(ов) Сердца\n\nБудут сброшены:\n— золото, этап и волна;\n— герои, гарнизон и обычные улучшения;\n— текущий враг и его здоровье.\n\nСохранятся Осколки, престижные улучшения и рекорд." % [stage, highest_stage_this_run, reward]
+	prestige_confirm_button.disabled = false
+	prestige_overlay.visible = true
+
+func close_prestige_confirmation() -> void:
+	if prestige_overlay != null: prestige_overlay.visible = false
+
+func reset_run_progress() -> void:
+	stage = 1; wave = 1; highest_stage_this_run = 1
+	gold = prestige_starting_gold()
+	tower_level = 1; tower_crit_level = 0; tower_crit_mult_level = 0; fortress_level = 1; fortress_armor_level = 0
+	barracks_open = false; barracks_level = 0; garrison_damage_level = 0; garrison_health_level = 0; garrison_crit_level = 0; garrison_speed_level = 0
+	owned.clear(); selected = ""; active_hero = ""; hero_upgrades.clear()
+	enemies.clear(); projectiles.clear(); effects.clear(); enemy_is_dying = false
+	reset_stage_combat(true)
+
+func perform_prestige() -> void:
+	if prestige_in_progress or not is_prestige_available(): return
+	var reward := calculate_prestige_reward()
+	if reward <= 0: return
+	prestige_in_progress = true
+	heart_shards = maxi(0, heart_shards + reward)
+	reset_run_progress()
+	close_prestige_confirmation()
+	start_stage()
+	save_progress(true)
+	update_hud()
+	refresh_tab()
+	prestige_in_progress = false
+
+func buy_prestige_damage_upgrade() -> void:
+	if not is_prestige_available() or prestige_damage_level >= PRESTIGE_DAMAGE_MAX_LEVEL: return
+	var cost := get_prestige_upgrade_cost(prestige_damage_level)
+	if heart_shards < cost: return
+	heart_shards -= cost; prestige_damage_level += 1; save_progress(true); update_hud(); refresh_tab()
+
+func buy_prestige_gold_upgrade() -> void:
+	if not is_prestige_available() or prestige_gold_level >= PRESTIGE_GOLD_MAX_LEVEL: return
+	var cost := get_prestige_upgrade_cost(prestige_gold_level)
+	if heart_shards < cost: return
+	heart_shards -= cost; prestige_gold_level += 1; save_progress(true); update_hud(); refresh_tab()
+
+func buy_prestige_start_gold_upgrade() -> void:
+	if not is_prestige_available() or prestige_start_gold_level >= PRESTIGE_START_GOLD_MAX_LEVEL: return
+	var cost := get_prestige_upgrade_cost(prestige_start_gold_level)
+	if heart_shards < cost: return
+	heart_shards -= cost; prestige_start_gold_level += 1; save_progress(true); update_hud(); refresh_tab()
+
 func update_hud() -> void:
 	if stage_label == null: return
 	stage_label.text = "СТАДИЯ %d   •   ВОЛНА %d / %d" % [stage, wave, MAX_WAVES_PER_STAGE]
 	var hero_name: String = hero_stats(active_hero).name if hero_alive else "Герой не выбран" if active_hero.is_empty() else "%s (пал)" % hero_stats(active_hero).name
 	info_label.text = "Крепость %d/%d  броня -%d     %s" % [max(0, fortress_hp), max_fortress(), fortress_armor(), hero_name]
-	gold_label.text = "✦ %d золота" % gold
+	gold_label.text = "✦ %d золота   •   Осколки Сердца: %d" % [gold, heart_shards]
 	start_stage_button.visible = state == "ready_stage"
 	start_stage_button.text = "Начать стадию %d" % stage
 	retry_button.visible = state == "defeat"
@@ -777,7 +905,10 @@ func _notification(what: int) -> void:
 
 func build_save_data() -> Dictionary:
 	return {
-		"version": 2, "stage": stage, "gold": gold,
+		"version": 3, "stage": stage, "gold": gold,
+		"highest_stage_this_run": highest_stage_this_run, "highest_stage_ever": highest_stage_ever,
+		"heart_shards": heart_shards, "prestige_unlocked": prestige_unlocked,
+		"prestige_damage_level": prestige_damage_level, "prestige_gold_level": prestige_gold_level, "prestige_start_gold_level": prestige_start_gold_level,
 		"tower_level": tower_level, "tower_crit_level": tower_crit_level, "tower_crit_mult_level": tower_crit_mult_level,
 		"fortress_level": fortress_level, "fortress_armor_level": fortress_armor_level,
 		"barracks_open": barracks_open, "barracks_level": barracks_level,
@@ -807,6 +938,13 @@ func save_bool(data: Dictionary, key: String, default_value: bool) -> bool:
 
 func apply_save_data(data: Dictionary) -> void:
 	stage = save_int(data, "stage", 1); gold = save_int(data, "gold", 0)
+	highest_stage_this_run = maxi(stage, save_int(data, "highest_stage_this_run", stage))
+	highest_stage_ever = maxi(highest_stage_this_run, save_int(data, "highest_stage_ever", highest_stage_this_run))
+	heart_shards = maxi(0, save_int(data, "heart_shards", 0))
+	prestige_unlocked = save_bool(data, "prestige_unlocked", false) or highest_stage_ever >= PRESTIGE_UNLOCK_STAGE
+	prestige_damage_level = clampi(save_int(data, "prestige_damage_level", 0), 0, PRESTIGE_DAMAGE_MAX_LEVEL)
+	prestige_gold_level = clampi(save_int(data, "prestige_gold_level", 0), 0, PRESTIGE_GOLD_MAX_LEVEL)
+	prestige_start_gold_level = clampi(save_int(data, "prestige_start_gold_level", 0), 0, PRESTIGE_START_GOLD_MAX_LEVEL)
 	var version := save_int(data, "version", 0)
 	if version == 0:
 		fortress_level = save_int(data, "fortress", 1); tower_level = save_int(data, "forge", 1)
