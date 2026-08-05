@@ -14,6 +14,7 @@ const PRESTIGE_DAMAGE_MAX_LEVEL: int = 20
 const PRESTIGE_GOLD_MAX_LEVEL: int = 20
 const PRESTIGE_START_GOLD_MAX_LEVEL: int = 10
 const STARTING_GOLD_VALUES: Array[int] = [0, 50, 150, 300, 500, 800, 1200, 1800, 2600, 3600, 5000]
+const BATTLEFIELD_RECT := Rect2(0, 128, W, 576)
 const NORMAL_MESSAGE_COLOR := Color("#d9c7a1")
 const UI_PANEL_COLOR := Color("#2c3747")
 const UI_CONTENT_COLOR := Color("#405064")
@@ -58,6 +59,9 @@ var hero_hp := 0.0
 var hero_alive := false
 var garrison_units: Array[Dictionary] = []
 var enemies: Array[Dictionary] = []
+var wave_max_health := 0.0
+var wave_current_health := 0.0
+var battle_generation: int = 0
 var projectiles: Array[Dictionary] = []
 var effects: Array[Dictionary] = []
 var state := "ready_stage" # ready_stage, battle, between, stage_victory, defeat
@@ -145,6 +149,7 @@ func reset_stage_combat(restart: bool) -> void:
 	hero_hp = hero_stats(active_hero).hp if hero_alive else 0.0
 	garrison_units = create_garrison_units()
 	enemies.clear(); projectiles.clear(); effects.clear()
+	wave_max_health = 0.0; wave_current_health = 0.0
 	hero_attack_timer = 0.0; hero_auto_timer = 0.0; garrison_auto_timer = 0.0; stage_victory_timer = 0.0
 	state = "ready_stage"
 	message_label.modulate = NORMAL_MESSAGE_COLOR
@@ -220,14 +225,30 @@ func calculate_enemy_stats() -> Dictionary:
 	var display_name := "Вожак стаи" if enemy_type == "boss" else "Закалённый мародёр" if enemy_type == "elite" else "Лесной слизень"
 	return {"type":enemy_type, "name":display_name, "hp":hp, "reward":reward, "damage":(11.0 + stage * 4.0) * damage_multiplier}
 
+func enemy_count_for_wave() -> int:
+	if wave >= MAX_WAVES_PER_STAGE: return 1
+	return clampi(1 + floori((stage - 1) / 2.0), 1, 4)
+
+func enemy_spawn_position(index: int, enemy_count: int) -> Vector2:
+	var x: float = 430.0
+	if enemy_count == 2: x = 390.0 if index == 0 else 470.0
+	elif enemy_count == 3: x = 350.0 if index == 0 else 420.0 if index == 1 else 490.0
+	elif enemy_count >= 4: x = 325.0 if index == 0 else 380.0 if index == 1 else 435.0 if index == 2 else 490.0
+	return Vector2(x, 535.0 + (index % 2) * 35.0)
+
 func spawn_enemy() -> void:
 	enemies.clear()
+	battle_generation += 1
 	var stats := calculate_enemy_stats()
 	current_enemy_type = stats.type
 	current_enemy_max_hp = stats.hp
 	current_enemy_reward = stats.reward
 	enemy_is_dying = false
-	enemies.append({"hp":stats.hp, "max_hp":stats.hp, "damage":stats.damage, "gold":stats.reward, "x":430.0, "y":535.0, "boss":current_enemy_type == "boss", "attack_cd":1.7, "flash":0.0, "type":current_enemy_type, "name":stats.name})
+	var count := enemy_count_for_wave()
+	for i in count:
+		var position := enemy_spawn_position(i, count)
+		enemies.append({"hp":stats.hp, "max_hp":stats.hp, "damage":stats.damage, "gold":stats.reward, "x":position.x, "y":position.y, "boss":current_enemy_type == "boss", "attack_cd":1.7 + i * 0.22, "flash":0.0, "type":current_enemy_type, "name":stats.name})
+	update_wave_health(true)
 	message_label.text = "БОСС У ВОРОТ!" if current_enemy_type == "boss" else "Волна %d начинается" % wave
 	message_label.modulate = Color("#ffbc68") if current_enemy_type == "boss" else NORMAL_MESSAGE_COLOR
 	update_enemy_ui()
@@ -261,8 +282,15 @@ func update_enemy_ui() -> void:
 		return
 	var enemy: Dictionary = enemies[0]
 	var prefix := "БОСС" if enemy.boss else "УСИЛЕННЫЙ ВРАГ" if enemy.type == "elite" else "ВРАГ"
-	enemy_label.text = "%s: %s  •  %d / %d HP" % [prefix, enemy.name, maxf(0.0, enemy.hp), enemy.max_hp]
+	enemy_label.text = "%s: %s  •  Волна %d — %d / %d HP" % [prefix, enemy.name, wave, wave_current_health, wave_max_health]
 	enemy_label.modulate = Color("#ffbe70") if enemy.boss else Color("#e6d7bd")
+
+func update_wave_health(reset_maximum := false) -> void:
+	if reset_maximum: wave_max_health = 0.0
+	wave_current_health = 0.0
+	for enemy in enemies:
+		if reset_maximum: wave_max_health += maxf(0.0, enemy.max_hp)
+		wave_current_health += maxf(0.0, enemy.hp)
 
 func _process(delta: float) -> void:
 	autosave_timer += delta
@@ -296,7 +324,8 @@ func _process(delta: float) -> void:
 	if state == "battle":
 		for p in projectiles:
 			if p.hit and not p.resolved:
-				p.resolved = true; apply_damage_to_enemy(p.target, p.damage, p.kind, p.crit)
+				p.resolved = true
+				if p.generation == battle_generation: apply_damage_to_wave(p.damage, p.kind, p.crit)
 	projectiles = projectiles.filter(func(p): return p.t < 1.08)
 	update_hud(); queue_redraw()
 
@@ -353,35 +382,43 @@ func first_garrison_target() -> Dictionary:
 	return {}
 
 func fire_attack(from: Vector2, to: Vector2, damage: float, kind: String, target: Dictionary, crit: bool) -> void:
-	projectiles.append({"from":from, "to":to, "damage":damage, "kind":kind, "target":target, "crit":crit, "t":0.0, "hit":false, "resolved":false})
+	projectiles.append({"from":from, "to":to, "damage":damage, "kind":kind, "target":target, "crit":crit, "generation":battle_generation, "t":0.0, "hit":false, "resolved":false})
 
-func apply_damage_to_enemy(enemy: Dictionary, damage: float, kind: String, crit: bool) -> void:
-	if state != "battle" or enemy_is_dying or not enemies.has(enemy): return
-	enemy.hp -= damage
-	play_hit_animation(enemy)
+func apply_damage_to_wave(damage: float, kind: String, crit: bool) -> void:
+	if state != "battle" or enemy_is_dying or enemies.is_empty() or damage <= 0.0: return
+	var first_enemy: Dictionary = enemies[0]
 	var damage_color := Color("#ff8b56") if crit else Color("#ffe5a2")
 	var damage_text := "КРИТ! -%d" % damage if crit else "-%d" % damage
-	add_effect(Vector2(enemy.x, enemy.y - 38), damage_text, damage_color)
-	if kind == "magic": add_effect(Vector2(enemy.x, enemy.y), "✦", Color("#c799ff"))
+	add_effect(Vector2(first_enemy.x, first_enemy.y - 38), damage_text, damage_color)
+	if kind == "magic": add_effect(Vector2(first_enemy.x, first_enemy.y), "✦", Color("#c799ff"))
+	var remaining_damage := damage
+	while remaining_damage > 0.0 and not enemies.is_empty():
+		var enemy: Dictionary = enemies[0]
+		var dealt_damage := minf(remaining_damage, maxf(0.0, enemy.hp))
+		enemy.hp = maxf(0.0, enemy.hp - dealt_damage)
+		remaining_damage -= dealt_damage
+		play_hit_animation(enemy)
+		if enemy.hp <= 0.0: kill_enemy(enemy)
+	update_wave_health()
 	update_enemy_ui()
-	if enemy.hp <= 0.0: kill_enemy()
 
 func play_hit_animation(enemy: Dictionary) -> void:
 	# A single short flash is reset on each hit and never accumulates on rapid taps.
 	enemy.flash = 0.16
 
-func kill_enemy() -> void:
-	if enemy_is_dying or enemies.is_empty(): return
+func kill_enemy(enemy: Dictionary) -> void:
+	if enemy_is_dying or not enemies.has(enemy): return
 	enemy_is_dying = true
-	var enemy: Dictionary = enemies[0]
 	gold += int(enemy.gold)
 	enemies_killed += 1
 	mark_save_dirty()
 	refresh_tab_purchase_states()
 	add_effect(Vector2(enemy.x, enemy.y - 60), "+%d золота" % enemy.gold, Color("#ffd461"))
-	enemies.clear()
+	enemies.erase(enemy)
+	enemy_is_dying = false
+	update_wave_health()
 	update_enemy_ui()
-	advance_wave()
+	if enemies.is_empty(): advance_wave()
 
 func finish_stage() -> void:
 	var reward := 100 + stage * 60
@@ -406,8 +443,12 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		try_tap(event.position)
 
-func try_tap(_pos: Vector2) -> void:
+func is_inside_battlefield(position: Vector2) -> bool:
+	return BATTLEFIELD_RECT.has_point(position)
+
+func try_tap(pos: Vector2) -> void:
 	if state != "battle": return
+	if not is_inside_battlefield(pos): return
 	if not enemies.is_empty(): tower_shot(enemies[0])
 
 func build_ui() -> void:
@@ -1024,7 +1065,7 @@ func draw_enemy_health_bar() -> void:
 	var enemy: Dictionary = enemies[0]
 	var bar_rect := Rect2(70, 157, 400, 12)
 	draw_rect(bar_rect, Color("#161923"))
-	draw_rect(Rect2(bar_rect.position + Vector2(2, 2), Vector2((bar_rect.size.x - 4.0) * clampf(enemy.hp / enemy.max_hp, 0.0, 1.0), 8)), Color("#d66a4d") if enemy.boss else Color("#c95155"))
+	draw_rect(Rect2(bar_rect.position + Vector2(2, 2), Vector2((bar_rect.size.x - 4.0) * clampf(wave_current_health / maxf(1.0, wave_max_health), 0.0, 1.0), 8)), Color("#d66a4d") if enemy.boss else Color("#c95155"))
 	draw_rect(bar_rect, Color("#ffbe70") if enemy.boss else Color("#8c9aa8"), false, 1.0)
 
 func draw_projectile(projectile: Dictionary) -> void:
