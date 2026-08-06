@@ -144,8 +144,7 @@ func format_number(value: float) -> String:
 	return EconomyCalculatorScript.format_number(value)
 
 func growing_cost(base: int, growth: float, level: int) -> int:
-	var safe_level := clampi(level, 0, MAX_COST_EXPONENT)
-	return EconomyCalculatorScript.growing_cost(base, growth, safe_level, MAX_FLOAT_GOLD)
+	return EconomyCalculatorScript.growing_cost(base, growth, level, MAX_FLOAT_GOLD, MAX_COST_EXPONENT)
 
 func capped_gold_value(value: float) -> int:
 	return EconomyCalculatorScript.capped_reward(value, MAX_FLOAT_GOLD)
@@ -1122,17 +1121,17 @@ func apply_save_data(data: Dictionary) -> void:
 	for hero_id in owned: hero_upgrade_data(hero_id)
 
 func load_progress() -> void:
-	load_progress_from_paths(SaveManager.SAVE_PATH, SaveManager.BACKUP_PATH, SaveManager.RESTORE_PATH, SaveManager.TEMP_PATH)
+	load_progress_from_paths(SaveManager.SAVE_PATH, SaveManager.TEMP_PATH, SaveManager.BACKUP_PATH, SaveManager.RESTORE_PATH)
 
-func load_progress_from_paths(save_path: String, backup_path: String, restore_path: String, temp_path: String) -> void:
+func load_progress_from_paths(save_path: String, temp_path: String, backup_path: String, restore_path: String) -> Error:
 	var data: Dictionary = SaveManager.load_game(save_path, backup_path, restore_path)
-	if data.is_empty(): return
+	if data.is_empty(): return OK
 	var loaded_kind := SaveManager.last_loaded_kind
 	apply_save_data(data)
 	if loaded_kind == SaveManager.SaveDataKind.LEGACY:
 		var migration_error := SaveManager.save_game(build_save_data(), save_path, temp_path, backup_path, restore_path)
-		if migration_error != OK:
-			push_warning("Старое сохранение загружено, но не удалось обновить его формат.")
+		return migration_error
+	return OK
 
 func _draw() -> void:
 	draw_texture_rect(DARK_FOREST_BACKGROUND, Rect2(0, 0, W, H), false)

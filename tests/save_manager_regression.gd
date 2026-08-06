@@ -22,7 +22,7 @@ var failures: int = 0
 
 func _init() -> void:
 	cleanup_test_files()
-	SaveManager.set_regression_final_validation_failure(false)
+	SaveManager.reset_regression_hooks()
 	test_clamped_save_values()
 	test_atomic_stage_completion()
 	test_single_enemy_reward()
@@ -53,7 +53,7 @@ func _init() -> void:
 	check(int(reloaded_without_backup.get("stage", 0)) == 5, "restored main loads without backup")
 	test_structurally_invalid_save()
 	cleanup_test_files()
-	SaveManager.set_regression_final_validation_failure(false)
+	SaveManager.reset_regression_hooks()
 	if failures == 0:
 		print("SaveManager regression checks passed.")
 		quit(0)
@@ -169,7 +169,7 @@ func test_legacy_save_migration() -> void:
 	check(SaveManager.detect_save_data_kind(legacy_data) == SaveManager.SaveDataKind.LEGACY, "legacy save kind is detected")
 	check(SaveManager.last_loaded_kind == SaveManager.SaveDataKind.LEGACY, "legacy load kind is retained")
 	var game := GameScript.new()
-	game.load_progress_from_paths(TEST_LEGACY_SAVE, TEST_LEGACY_BACKUP, TEST_LEGACY_RESTORE, TEST_LEGACY_TEMP)
+	check(game.load_progress_from_paths(TEST_LEGACY_SAVE, TEST_LEGACY_TEMP, TEST_LEGACY_BACKUP, TEST_LEGACY_RESTORE) == OK, "legacy load route migrates successfully")
 	check(game.fortress_level == 4 and game.tower_level == 5 and game.barracks_level == 3 and game.barracks_open, "legacy fields are applied")
 	var migrated_data := SaveManager.load_game(TEST_LEGACY_SAVE, TEST_LEGACY_BACKUP, TEST_LEGACY_RESTORE)
 	check(int(migrated_data.get("version", 0)) == SaveSchema.VERSION, "migrated save has current version")
@@ -178,6 +178,7 @@ func test_legacy_save_migration() -> void:
 	var legacy_backup := SaveManager.read_data_from_path(TEST_LEGACY_BACKUP, "legacy backup")
 	check(SaveManager.detect_save_data_kind(legacy_backup) == SaveManager.SaveDataKind.LEGACY, "backup preserves the original legacy save")
 	game.free()
+	SaveManager.delete_save(TEST_LEGACY_SAVE, TEST_LEGACY_TEMP, TEST_LEGACY_BACKUP, TEST_LEGACY_RESTORE)
 
 func test_unsupported_future_version() -> void:
 	SaveManager.delete_save(TEST_FUTURE_SAVE, TEST_FUTURE_TEMP, TEST_FUTURE_BACKUP, TEST_FUTURE_RESTORE)
@@ -200,6 +201,7 @@ func test_unsupported_future_version() -> void:
 	var backup_data := SaveManager.load_game(TEST_FUTURE_SAVE, TEST_FUTURE_BACKUP, TEST_FUTURE_RESTORE)
 	check(int(backup_data.get("stage", 0)) == 9 and SaveManager.last_loaded_kind == SaveManager.SaveDataKind.FUTURE, "compatible backup loads without replacing future main")
 	check(FileAccess.get_file_as_string(TEST_FUTURE_SAVE) == original_future_contents, "future main remains after backup fallback")
+	SaveManager.delete_save(TEST_FUTURE_SAVE, TEST_FUTURE_TEMP, TEST_FUTURE_BACKUP, TEST_FUTURE_RESTORE)
 
 func test_final_validation_rollback() -> void:
 	SaveManager.delete_save(TEST_ROLLBACK_SAVE, TEST_ROLLBACK_TEMP, TEST_ROLLBACK_BACKUP, TEST_ROLLBACK_RESTORE)
@@ -207,11 +209,13 @@ func test_final_validation_rollback() -> void:
 	check(SaveManager.save_game({"version":SaveSchema.VERSION, "stage":10, "gold":1000}, TEST_ROLLBACK_SAVE, TEST_ROLLBACK_TEMP, TEST_ROLLBACK_BACKUP) == OK, "rollback backup-producing save")
 	SaveManager.set_regression_final_validation_failure(true)
 	var failed_save := SaveManager.save_game({"version":SaveSchema.VERSION, "stage":11, "gold":1100}, TEST_ROLLBACK_SAVE, TEST_ROLLBACK_TEMP, TEST_ROLLBACK_BACKUP, TEST_ROLLBACK_RESTORE)
-	SaveManager.set_regression_final_validation_failure(false)
+	SaveManager.reset_regression_hooks()
 	check(failed_save == ERR_FILE_CORRUPT, "simulated final validation failure returns ERR_FILE_CORRUPT")
 	var rolled_back_data := SaveManager.load_game(TEST_ROLLBACK_SAVE, TEST_ROLLBACK_BACKUP, TEST_ROLLBACK_RESTORE)
 	check(int(rolled_back_data.get("stage", 0)) == 10 and int(rolled_back_data.get("gold", -1)) == 1000, "rollback restores the previous main save")
 	check(not FileAccess.file_exists(TEST_ROLLBACK_TEMP) and not FileAccess.file_exists(TEST_ROLLBACK_RESTORE), "rollback leaves no temporary files")
+	SaveManager.reset_regression_hooks()
+	SaveManager.delete_save(TEST_ROLLBACK_SAVE, TEST_ROLLBACK_TEMP, TEST_ROLLBACK_BACKUP, TEST_ROLLBACK_RESTORE)
 
 func test_structurally_invalid_save() -> void:
 	check(SaveManager.save_game({"version":SaveSchema.VERSION, "stage":7, "gold":700}, TEST_SAVE, TEST_TEMP, TEST_BACKUP) == OK, "structural test initial save")
@@ -227,3 +231,4 @@ func test_structurally_invalid_save() -> void:
 	check(int(recovered_main.get("stage", 0)) == 7 and int(recovered_main.get("gold", -1)) == 700, "structural recovery replaces main file")
 	check(config.save(TEST_SAVE) == OK and config.save(TEST_BACKUP) == OK, "invalid main and backup are written")
 	check(SaveManager.load_game(TEST_SAVE, TEST_BACKUP, TEST_RESTORE).is_empty(), "two invalid save files return safe empty data")
+	SaveManager.delete_save(TEST_SAVE, TEST_TEMP, TEST_BACKUP, TEST_RESTORE)

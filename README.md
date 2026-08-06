@@ -17,6 +17,8 @@
 & 'C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe' --headless --path . --editor --quit
 ```
 
+## Автоматические проверки
+
 Локальные регрессионные тесты:
 
 ```powershell
@@ -26,7 +28,7 @@
 
 GitHub Actions запускает эти две проверки и загрузку проекта на каждом push в `master`, pull request и вручную через **Run workflow**.
 
-### Android debug APK
+## Android debug export
 
 В репозиторий добавлен preset `Android Debug` без keystore, паролей и пользовательских путей. Установите Android export templates в Godot, при необходимости настройте Android SDK, выберите **Android Debug** в меню Export и соберите debug APK. В этой среде Android SDK не установлен, поэтому APK здесь не собирался.
 

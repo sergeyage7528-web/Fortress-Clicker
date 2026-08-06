@@ -26,6 +26,9 @@ static func set_regression_final_validation_failure(enabled: bool) -> void:
 	if not OS.is_debug_build(): return
 	_regression_force_final_validation_failure = enabled
 
+static func reset_regression_hooks() -> void:
+	_regression_force_final_validation_failure = false
+
 static func save_game(data: Dictionary, save_path := SAVE_PATH, temp_path := TEMP_PATH, backup_path := BACKUP_PATH, restore_path := RESTORE_PATH) -> Error:
 	var raw_main_data := read_data_from_path(save_path, "текущее основное")
 	if detect_save_data_kind(raw_main_data) == SaveDataKind.FUTURE:
