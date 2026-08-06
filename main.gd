@@ -2,6 +2,7 @@ extends Node2D
 
 const W := 540.0
 const H := 960.0
+const DARK_FOREST_BACKGROUND: Texture2D = preload("res://assets/dark_forest_background.png")
 const AUTOSAVE_INTERVAL := 20.0
 const SAVE_VERSION: int = SaveSchema.VERSION
 const MAX_STANDARD_UPGRADE_LEVEL: int = 10000
@@ -1083,9 +1084,10 @@ func load_progress() -> void:
 	if SaveManager.save_requires_migration(data): save_progress(true)
 
 func _draw() -> void:
-	draw_rect(Rect2(0, 0, W, H), Color("#0b1020")); draw_circle(Vector2(445, 155), 46, Color("#303650"))
-	draw_colored_polygon(PackedVector2Array([Vector2(0,410),Vector2(130,250),Vector2(260,400),Vector2(385,230),Vector2(540,390),Vector2(540,704),Vector2(0,704)]), Color("#192036"))
-	draw_rect(Rect2(0, 600, W, 104), Color("#25252b")); draw_line(Vector2(0,620),Vector2(W,620),Color("#48413d"),2)
+	draw_texture_rect(DARK_FOREST_BACKGROUND, Rect2(0, 0, W, H), false)
+	draw_rect(Rect2(0, 0, W, H), Color(0.025, 0.04, 0.09, 0.35)); draw_circle(Vector2(445, 155), 46, Color("#303650"))
+	draw_colored_polygon(PackedVector2Array([Vector2(0,410),Vector2(130,250),Vector2(260,400),Vector2(385,230),Vector2(540,390),Vector2(540,704),Vector2(0,704)]), Color(0.098, 0.125, 0.21, 0.62))
+	draw_rect(Rect2(0, 600, W, 104), Color(0.145, 0.145, 0.17, 0.78)); draw_line(Vector2(0,620),Vector2(W,620),Color("#48413d"),2)
 	draw_rect(Rect2(35, 392, 205, 214), Color("#5b5b61")); draw_rect(Rect2(35, 392, 205, 214), Color("#262a33"), 4)
 	for x in range(43, 235, 28): draw_rect(Rect2(x, 378, 17, 30), Color("#727177")); draw_rect(Rect2(x, 378, 17, 30), Color("#282b34"), 2)
 	draw_rect(Rect2(75, 287, 94, 113), Color("#606169")); draw_rect(Rect2(75, 287, 94, 113), Color("#242832"), 4); draw_polygon(PackedVector2Array([Vector2(62,287),Vector2(122,220),Vector2(182,287)]), PackedColorArray([Color("#303346")]))
