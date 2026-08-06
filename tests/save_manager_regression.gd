@@ -21,12 +21,15 @@ const GameScript = preload("res://main.gd")
 var failures: int = 0
 
 func _init() -> void:
+	cleanup_test_files()
+	SaveManager.set_regression_final_validation_failure(false)
 	test_clamped_save_values()
 	test_atomic_stage_completion()
 	test_single_enemy_reward()
 	test_old_projectile_generation()
 	test_maximum_gold()
 	test_prestige_combat_bonuses_and_save_data()
+	test_fractional_required_values()
 	test_legacy_save_migration()
 	test_unsupported_future_version()
 	test_final_validation_rollback()
@@ -49,10 +52,8 @@ func _init() -> void:
 	var reloaded_without_backup := SaveManager.load_game(TEST_SAVE, TEST_BACKUP, TEST_RESTORE)
 	check(int(reloaded_without_backup.get("stage", 0)) == 5, "restored main loads without backup")
 	test_structurally_invalid_save()
-	SaveManager.delete_save(TEST_SAVE, TEST_TEMP, TEST_BACKUP, TEST_RESTORE)
-	SaveManager.delete_save(TEST_LEGACY_SAVE, TEST_LEGACY_TEMP, TEST_LEGACY_BACKUP, TEST_LEGACY_RESTORE)
-	SaveManager.delete_save(TEST_FUTURE_SAVE, TEST_FUTURE_TEMP, TEST_FUTURE_BACKUP, TEST_FUTURE_RESTORE)
-	SaveManager.delete_save(TEST_ROLLBACK_SAVE, TEST_ROLLBACK_TEMP, TEST_ROLLBACK_BACKUP, TEST_ROLLBACK_RESTORE)
+	cleanup_test_files()
+	SaveManager.set_regression_final_validation_failure(false)
 	if failures == 0:
 		print("SaveManager regression checks passed.")
 		quit(0)
@@ -63,6 +64,12 @@ func check(condition: bool, description: String) -> void:
 	if condition: return
 	failures += 1
 	push_error("Regression check failed: %s" % description)
+
+func cleanup_test_files() -> void:
+	SaveManager.delete_save(TEST_SAVE, TEST_TEMP, TEST_BACKUP, TEST_RESTORE)
+	SaveManager.delete_save(TEST_LEGACY_SAVE, TEST_LEGACY_TEMP, TEST_LEGACY_BACKUP, TEST_LEGACY_RESTORE)
+	SaveManager.delete_save(TEST_FUTURE_SAVE, TEST_FUTURE_TEMP, TEST_FUTURE_BACKUP, TEST_FUTURE_RESTORE)
+	SaveManager.delete_save(TEST_ROLLBACK_SAVE, TEST_ROLLBACK_TEMP, TEST_ROLLBACK_BACKUP, TEST_ROLLBACK_RESTORE)
 
 func test_clamped_save_values() -> void:
 	var game := GameScript.new()
@@ -138,6 +145,16 @@ func test_prestige_combat_bonuses_and_save_data() -> void:
 	restored.free()
 	game.free()
 
+func test_fractional_required_values() -> void:
+	for data in [
+		{"version":SaveSchema.VERSION, "stage":5.5, "gold":100},
+		{"version":3.5, "stage":5, "gold":100},
+		{"version":SaveSchema.VERSION, "stage":5, "gold":100.25}
+	]:
+		check(SaveManager.detect_save_data_kind(data) == SaveManager.SaveDataKind.INVALID, "fractional required value is invalid")
+	var integral_floats := {"version":float(SaveSchema.VERSION), "stage":5.0, "gold":100.0}
+	check(SaveManager.detect_save_data_kind(integral_floats) == SaveManager.SaveDataKind.CURRENT, "mathematically integral floats are accepted")
+
 func test_legacy_save_migration() -> void:
 	SaveManager.delete_save(TEST_LEGACY_SAVE, TEST_LEGACY_TEMP, TEST_LEGACY_BACKUP, TEST_LEGACY_RESTORE)
 	var config := ConfigFile.new()
@@ -152,9 +169,8 @@ func test_legacy_save_migration() -> void:
 	check(SaveManager.detect_save_data_kind(legacy_data) == SaveManager.SaveDataKind.LEGACY, "legacy save kind is detected")
 	check(SaveManager.last_loaded_kind == SaveManager.SaveDataKind.LEGACY, "legacy load kind is retained")
 	var game := GameScript.new()
-	game.apply_save_data(legacy_data)
+	game.load_progress_from_paths(TEST_LEGACY_SAVE, TEST_LEGACY_BACKUP, TEST_LEGACY_RESTORE, TEST_LEGACY_TEMP)
 	check(game.fortress_level == 4 and game.tower_level == 5 and game.barracks_level == 3 and game.barracks_open, "legacy fields are applied")
-	check(SaveManager.save_game(game.build_save_data(), TEST_LEGACY_SAVE, TEST_LEGACY_TEMP, TEST_LEGACY_BACKUP, TEST_LEGACY_RESTORE) == OK, "legacy save is migrated")
 	var migrated_data := SaveManager.load_game(TEST_LEGACY_SAVE, TEST_LEGACY_BACKUP, TEST_LEGACY_RESTORE)
 	check(int(migrated_data.get("version", 0)) == SaveSchema.VERSION, "migrated save has current version")
 	check(int(migrated_data.get("fortress_level", 0)) == 4 and int(migrated_data.get("tower_level", 0)) == 5 and int(migrated_data.get("barracks_level", 0)) == 3, "migrated save has current field names")
@@ -189,9 +205,9 @@ func test_final_validation_rollback() -> void:
 	SaveManager.delete_save(TEST_ROLLBACK_SAVE, TEST_ROLLBACK_TEMP, TEST_ROLLBACK_BACKUP, TEST_ROLLBACK_RESTORE)
 	check(SaveManager.save_game({"version":SaveSchema.VERSION, "stage":9, "gold":900}, TEST_ROLLBACK_SAVE, TEST_ROLLBACK_TEMP, TEST_ROLLBACK_BACKUP) == OK, "rollback initial save")
 	check(SaveManager.save_game({"version":SaveSchema.VERSION, "stage":10, "gold":1000}, TEST_ROLLBACK_SAVE, TEST_ROLLBACK_TEMP, TEST_ROLLBACK_BACKUP) == OK, "rollback backup-producing save")
-	SaveManager.regression_force_final_validation_failure = true
+	SaveManager.set_regression_final_validation_failure(true)
 	var failed_save := SaveManager.save_game({"version":SaveSchema.VERSION, "stage":11, "gold":1100}, TEST_ROLLBACK_SAVE, TEST_ROLLBACK_TEMP, TEST_ROLLBACK_BACKUP, TEST_ROLLBACK_RESTORE)
-	SaveManager.regression_force_final_validation_failure = false
+	SaveManager.set_regression_final_validation_failure(false)
 	check(failed_save == ERR_FILE_CORRUPT, "simulated final validation failure returns ERR_FILE_CORRUPT")
 	var rolled_back_data := SaveManager.load_game(TEST_ROLLBACK_SAVE, TEST_ROLLBACK_BACKUP, TEST_ROLLBACK_RESTORE)
 	check(int(rolled_back_data.get("stage", 0)) == 10 and int(rolled_back_data.get("gold", -1)) == 1000, "rollback restores the previous main save")

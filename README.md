@@ -1,5 +1,7 @@
 # Fortress Clicker
 
+[![Godot checks](https://github.com/sergeyage7528-web/Fortress-Clicker/actions/workflows/godot-check.yml/badge.svg)](https://github.com/sergeyage7528-web/Fortress-Clicker/actions/workflows/godot-check.yml)
+
 Вертикальный Android-прототип игры-кликера в мрачном средневековом фэнтези на Godot 4. Игрок защищает крепость от волн монстров: вручную стреляет из башни, развивает героев и гарнизон, покупает улучшения и после поздних этапов получает постоянный прогресс через систему престижа.
 
 ## Требования и запуск
@@ -13,6 +15,29 @@
 
 ```powershell
 & 'C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe' --headless --path . --editor --quit
+```
+
+Локальные регрессионные тесты:
+
+```powershell
+& 'C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe' --headless --path . --script res://tests/save_manager_regression.gd
+& 'C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe' --headless --path . --script res://tests/economy_regression.gd
+```
+
+GitHub Actions запускает эти две проверки и загрузку проекта на каждом push в `master`, pull request и вручную через **Run workflow**.
+
+### Android debug APK
+
+В репозиторий добавлен preset `Android Debug` без keystore, паролей и пользовательских путей. Установите Android export templates в Godot, при необходимости настройте Android SDK, выберите **Android Debug** в меню Export и соберите debug APK. В этой среде Android SDK не установлен, поэтому APK здесь не собирался.
+
+## Структура проекта
+
+```text
+main.gd                         игровой цикл и UI
+scripts/save_manager.gd          безопасное хранение и миграции
+scripts/economy_calculator.gd    чистые формулы цен, наград и форматирования
+tests/                           headless-регрессионные тесты
+.github/workflows/               CI-проверки Godot
 ```
 
 ## Управление
@@ -90,7 +115,7 @@ ScrollContainer
 - Постоянные улучшения:
   - **Сила Сердца** — +10% ко всему урону за уровень, максимум 20.
   - **Знание охотника** — +10% золота за врагов за уровень, максимум 20.
-- **Запасы крепости** — стартовое золото после следующего перерождения, максимум 10.
+  - **Запасы крепости** — стартовое золото после следующего перерождения, максимум 10.
   - **Наследие воина** — +1% к шансу критического удара башни за уровень, максимум 15.
   - **Сокрушение чудовищ** — +15% урона по усиленным врагам и боссам за уровень, максимум 10.
 

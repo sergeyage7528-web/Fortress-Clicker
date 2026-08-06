@@ -3,6 +3,7 @@ extends Node2D
 const W := 540.0
 const H := 960.0
 const DARK_FOREST_BACKGROUND: Texture2D = preload("res://assets/dark_forest_background.png")
+const EconomyCalculatorScript = preload("res://scripts/economy_calculator.gd")
 const AUTOSAVE_INTERVAL := 20.0
 const SAVE_VERSION: int = SaveSchema.VERSION
 const MAX_STANDARD_UPGRADE_LEVEL: int = 10000
@@ -140,19 +141,14 @@ func final_auto_damage_per_second() -> float:
 	return damage
 
 func format_number(value: float) -> String:
-	var absolute := absf(value)
-	if absolute >= 1_000_000_000.0: return "%.2fB" % (value / 1_000_000_000.0)
-	if absolute >= 1_000_000.0: return "%.2fM" % (value / 1_000_000.0)
-	if absolute >= 1_000.0: return "%.2fK" % (value / 1_000.0)
-	return str(int(round(value)))
+	return EconomyCalculatorScript.format_number(value)
 
 func growing_cost(base: int, growth: float, level: int) -> int:
 	var safe_level := clampi(level, 0, MAX_COST_EXPONENT)
-	return int(minf(float(MAX_FLOAT_GOLD), base * pow(growth, safe_level)))
+	return EconomyCalculatorScript.growing_cost(base, growth, safe_level, MAX_FLOAT_GOLD)
 
 func capped_gold_value(value: float) -> int:
-	if is_nan(value) or is_inf(value): return MAX_GOLD
-	return int(clampf(round(value), 0.0, float(MAX_FLOAT_GOLD)))
+	return EconomyCalculatorScript.capped_reward(value, MAX_FLOAT_GOLD)
 
 func add_gold(amount: int) -> void:
 	if amount <= 0: return
@@ -1072,8 +1068,7 @@ func save_progress(force: bool = false) -> void:
 
 func load_int_clamped(data: Dictionary, key: String, default_value: int, min_value: int, max_value: int) -> int:
 	var value = data.get(key, default_value)
-	if not (value is int or value is float): return default_value
-	if value is float and (is_nan(value) or is_inf(value)): return default_value
+	if not SaveManager.is_integer_value(value): return default_value
 	return clampi(int(value), min_value, max_value)
 
 func save_bool(data: Dictionary, key: String, default_value: bool) -> bool:
@@ -1127,12 +1122,15 @@ func apply_save_data(data: Dictionary) -> void:
 	for hero_id in owned: hero_upgrade_data(hero_id)
 
 func load_progress() -> void:
-	var data: Dictionary = SaveManager.load_game()
+	load_progress_from_paths(SaveManager.SAVE_PATH, SaveManager.BACKUP_PATH, SaveManager.RESTORE_PATH, SaveManager.TEMP_PATH)
+
+func load_progress_from_paths(save_path: String, backup_path: String, restore_path: String, temp_path: String) -> void:
+	var data: Dictionary = SaveManager.load_game(save_path, backup_path, restore_path)
 	if data.is_empty(): return
 	var loaded_kind := SaveManager.last_loaded_kind
 	apply_save_data(data)
 	if loaded_kind == SaveManager.SaveDataKind.LEGACY:
-		var migration_error := SaveManager.save_game(build_save_data())
+		var migration_error := SaveManager.save_game(build_save_data(), save_path, temp_path, backup_path, restore_path)
 		if migration_error != OK:
 			push_warning("Старое сохранение загружено, но не удалось обновить его формат.")
 

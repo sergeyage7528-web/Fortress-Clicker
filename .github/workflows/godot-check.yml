@@ -1,0 +1,22 @@
+name: Godot checks
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vitorgus/setup-godot@v1.1.1
+        with:
+          godot-version: 4.7.1
+      - name: Check project loads
+        run: godot --headless --path . --editor --quit
+      - name: Save manager regression tests
+        run: godot --headless --path . --script res://tests/save_manager_regression.gd
+      - name: Economy regression tests
+        run: godot --headless --path . --script res://tests/economy_regression.gd

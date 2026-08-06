@@ -19,8 +19,12 @@ enum SaveDataKind {
 
 # Используется только из изолированного регрессионного теста: в игровом UI этот
 # переключатель недоступен и в сохранения не попадает.
-static var regression_force_final_validation_failure: bool = false
+static var _regression_force_final_validation_failure: bool = false
 static var last_loaded_kind: SaveDataKind = SaveDataKind.INVALID
+
+static func set_regression_final_validation_failure(enabled: bool) -> void:
+	if not OS.is_debug_build(): return
+	_regression_force_final_validation_failure = enabled
 
 static func save_game(data: Dictionary, save_path := SAVE_PATH, temp_path := TEMP_PATH, backup_path := BACKUP_PATH, restore_path := RESTORE_PATH) -> Error:
 	var raw_main_data := read_data_from_path(save_path, "текущее основное")
@@ -71,11 +75,14 @@ static func save_game(data: Dictionary, save_path := SAVE_PATH, temp_path := TEM
 			return remove_error
 	var replace_error := DirAccess.rename_absolute(temp_path_absolute, main_path)
 	if replace_error != OK:
-		if FileAccess.file_exists(backup_path): DirAccess.copy_absolute(backup_path_absolute, main_path)
+		if FileAccess.file_exists(backup_path) and not restore_main_from_backup(save_path, backup_path, restore_path):
+			push_error("Не удалось выполнить rollback после ошибки замены сохранения.")
+		cleanup_temporary_file(temp_path)
+		cleanup_temporary_file(restore_path)
 		push_warning("Не удалось завершить замену сохранения: %s" % replace_error)
 		return replace_error
 	var final_data: Dictionary = {}
-	if not regression_force_final_validation_failure:
+	if not _regression_force_final_validation_failure:
 		final_data = load_data_from_path(save_path, "новое основное")
 	if final_data.is_empty():
 		push_warning("Новое основное сохранение не прошло проверку.")
@@ -144,12 +151,15 @@ static func restore_main_from_backup(save_path: String, backup_path: String, res
 		return false
 	return true
 
-static func is_numeric_value(value: Variant) -> bool:
-	if not (value is int or value is float): return false
-	return not (value is float and (is_nan(value) or is_inf(value)))
+static func is_integer_value(value: Variant) -> bool:
+	if value is int: return true
+	if value is float:
+		if is_nan(value) or is_inf(value): return false
+		return value == floor(value)
+	return false
 
 static func is_integer_in_range(value: Variant, minimum: int, maximum: int) -> bool:
-	if not is_numeric_value(value): return false
+	if not is_integer_value(value): return false
 	return value >= minimum and value <= maximum
 
 static func has_valid_stage_and_gold(data: Dictionary) -> bool:
@@ -167,14 +177,17 @@ static func is_legacy_save_data(data: Dictionary) -> bool:
 static func detect_save_data_kind(data: Dictionary) -> SaveDataKind:
 	if data.is_empty() or not has_valid_stage_and_gold(data): return SaveDataKind.INVALID
 	if not data.has("version"): return SaveDataKind.LEGACY
-	if not is_numeric_value(data["version"]): return SaveDataKind.INVALID
+	if not is_integer_value(data["version"]): return SaveDataKind.INVALID
 	if data["version"] > MAX_SAVE_VERSION: return SaveDataKind.FUTURE
 	if is_current_save_data(data): return SaveDataKind.CURRENT
 	return SaveDataKind.INVALID
 
 static func save_requires_migration(data: Dictionary) -> bool:
 	if is_legacy_save_data(data): return true
-	return data.has("version") and is_numeric_value(data["version"]) and int(data["version"]) < MAX_SAVE_VERSION
+	return data.has("version") and is_integer_value(data["version"]) and int(data["version"]) < MAX_SAVE_VERSION
+
+static func cleanup_temporary_file(path: String) -> void:
+	if FileAccess.file_exists(path): DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 
 static func validate_save_data(data: Dictionary) -> bool:
 	return is_current_save_data(data) or is_legacy_save_data(data)
