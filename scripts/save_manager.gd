@@ -10,7 +10,11 @@ const MAX_SAVE_VERSION := SaveSchema.VERSION
 const MAX_STAGE := SaveSchema.MAX_STAGE
 const MAX_GOLD := SaveSchema.MAX_GOLD
 
-static func save_game(data: Dictionary, save_path := SAVE_PATH, temp_path := TEMP_PATH, backup_path := BACKUP_PATH) -> Error:
+# Используется только из изолированного регрессионного теста: в игровом UI этот
+# переключатель недоступен и в сохранения не попадает.
+static var regression_force_final_validation_failure: bool = false
+
+static func save_game(data: Dictionary, save_path := SAVE_PATH, temp_path := TEMP_PATH, backup_path := BACKUP_PATH, restore_path := RESTORE_PATH) -> Error:
 	var temp_path_absolute := ProjectSettings.globalize_path(temp_path)
 	if FileAccess.file_exists(temp_path):
 		var cleanup_temp_error := DirAccess.remove_absolute(temp_path_absolute)
@@ -58,8 +62,20 @@ static func save_game(data: Dictionary, save_path := SAVE_PATH, temp_path := TEM
 		if FileAccess.file_exists(backup_path): DirAccess.copy_absolute(backup_path_absolute, main_path)
 		push_warning("Не удалось завершить замену сохранения: %s" % replace_error)
 		return replace_error
-	if load_data_from_path(save_path, "новое основное").is_empty():
+	var final_data: Dictionary = {}
+	if not regression_force_final_validation_failure:
+		final_data = load_data_from_path(save_path, "новое основное")
+	if final_data.is_empty():
 		push_warning("Новое основное сохранение не прошло проверку.")
+		if FileAccess.file_exists(save_path):
+			var remove_corrupt_error := DirAccess.remove_absolute(main_path)
+			if remove_corrupt_error != OK:
+				push_warning("Не удалось удалить не прошедшее проверку основное сохранение: %s" % remove_corrupt_error)
+		if FileAccess.file_exists(backup_path):
+			if not restore_main_from_backup(save_path, backup_path, restore_path):
+				push_warning("Не удалось восстановить backup после неудачной финальной проверки сохранения.")
+		else:
+			push_warning("Backup отсутствует: прежний прогресс невозможно восстановить после неудачной финальной проверки.")
 		return ERR_FILE_CORRUPT
 	return OK
 
@@ -108,14 +124,28 @@ static func is_numeric_value(value: Variant) -> bool:
 	if not (value is int or value is float): return false
 	return not (value is float and (is_nan(value) or is_inf(value)))
 
+static func is_integer_in_range(value: Variant, minimum: int, maximum: int) -> bool:
+	if not is_numeric_value(value): return false
+	return value >= minimum and value <= maximum
+
+static func has_valid_stage_and_gold(data: Dictionary) -> bool:
+	return data.has("stage") and data.has("gold") \
+		and is_integer_in_range(data["stage"], 1, MAX_STAGE) \
+		and is_integer_in_range(data["gold"], 0, MAX_GOLD)
+
+static func is_current_save_data(data: Dictionary) -> bool:
+	if data.is_empty() or not data.has("version") or not has_valid_stage_and_gold(data): return false
+	return is_integer_in_range(data["version"], 1, MAX_SAVE_VERSION)
+
+static func is_legacy_save_data(data: Dictionary) -> bool:
+	return not data.is_empty() and not data.has("version") and has_valid_stage_and_gold(data)
+
+static func save_requires_migration(data: Dictionary) -> bool:
+	if is_legacy_save_data(data): return true
+	return data.has("version") and is_numeric_value(data["version"]) and int(data["version"]) < MAX_SAVE_VERSION
+
 static func validate_save_data(data: Dictionary) -> bool:
-	if data.is_empty(): return false
-	for key in ["version", "stage", "gold"]:
-		if not data.has(key) or not is_numeric_value(data[key]): return false
-	var version := int(data["version"])
-	var stage := int(data["stage"])
-	var gold := int(data["gold"])
-	return version >= 0 and version <= MAX_SAVE_VERSION and stage >= 1 and stage <= MAX_STAGE and gold >= 0 and gold <= MAX_GOLD
+	return is_current_save_data(data) or is_legacy_save_data(data)
 
 static func load_data_from_path(path: String, source_name: String) -> Dictionary:
 	if not FileAccess.file_exists(path): return {}
@@ -130,6 +160,9 @@ static func load_data_from_path(path: String, source_name: String) -> Dictionary
 	var data: Dictionary = {}
 	for key in config.get_section_keys(SECTION):
 		data[key] = config.get_value(SECTION, key)
+	if data.has("version") and is_numeric_value(data["version"]) and data["version"] > MAX_SAVE_VERSION:
+		push_warning("%s сохранение создано более новой версией игры и не будет перезаписано." % source_name.capitalize())
+		return {}
 	if not validate_save_data(data):
 		push_warning("%s сохранение не прошло проверку структуры." % source_name.capitalize())
 		return {}

@@ -285,19 +285,10 @@ func advance_wave() -> void:
 	wave += 1
 	state = "between"
 	spawn_timer = WAVE_DELAY
-	message_label.modulate = NORMAL_MESSAGE_COLOR
-	message_label.text = "Волна %d очищена! Следующий враг приближается…" % (wave - 1)
+	if message_label != null:
+		message_label.modulate = NORMAL_MESSAGE_COLOR
+		message_label.text = "Волна %d очищена! Следующий враг приближается…" % (wave - 1)
 	update_enemy_ui()
-
-func advance_stage() -> void:
-	stage = mini(MAX_STAGE, stage + 1)
-	wave = 1
-	highest_stage_this_run = maxi(highest_stage_this_run, stage)
-	highest_stage_ever = maxi(highest_stage_ever, stage)
-	if stage >= PRESTIGE_UNLOCK_STAGE: prestige_unlocked = true
-	mark_save_dirty()
-	reset_stage_combat(false)
-	start_stage()
 
 func update_enemy_ui() -> void:
 	if enemy_label == null: return
@@ -627,8 +618,14 @@ func test_skip_wave() -> void:
 	else: test_start_specific_wave(wave + 1)
 
 func test_next_stage() -> void:
-	stage += 1; wave = 1; highest_stage_this_run = maxi(highest_stage_this_run, stage); highest_stage_ever = maxi(highest_stage_ever, stage); if stage >= PRESTIGE_UNLOCK_STAGE: prestige_unlocked = true
-	enemies.clear(); projectiles.clear(); reset_stage_combat(false); test_finish("Подготовлена стадия %d" % stage)
+	debug_skip_to_next_stage()
+	test_finish("Подготовлена стадия %d" % stage)
+
+func debug_skip_to_next_stage() -> void:
+	if not process_stage_completion(0): return
+	enemies.clear()
+	projectiles.clear()
+	reset_stage_combat(false)
 
 func test_damage_fortress(amount: float) -> void:
 	if state == "defeat": test_finish("Крепость уже разрушена"); return
@@ -1083,6 +1080,7 @@ func load_progress() -> void:
 	var data: Dictionary = SaveManager.load_game()
 	if data.is_empty(): return
 	apply_save_data(data)
+	if SaveManager.save_requires_migration(data): save_progress(true)
 
 func _draw() -> void:
 	draw_rect(Rect2(0, 0, W, H), Color("#0b1020")); draw_circle(Vector2(445, 155), 46, Color("#303650"))

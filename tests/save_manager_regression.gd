@@ -4,6 +4,18 @@ const TEST_SAVE := "user://fortress_regression_primary.cfg"
 const TEST_TEMP := "user://fortress_regression_primary.tmp"
 const TEST_BACKUP := "user://fortress_regression_primary.bak"
 const TEST_RESTORE := "user://fortress_regression_primary.restore"
+const TEST_LEGACY_SAVE := "user://fortress_regression_legacy.cfg"
+const TEST_LEGACY_TEMP := "user://fortress_regression_legacy.tmp"
+const TEST_LEGACY_BACKUP := "user://fortress_regression_legacy.bak"
+const TEST_LEGACY_RESTORE := "user://fortress_regression_legacy.restore"
+const TEST_FUTURE_SAVE := "user://fortress_regression_future.cfg"
+const TEST_FUTURE_TEMP := "user://fortress_regression_future.tmp"
+const TEST_FUTURE_BACKUP := "user://fortress_regression_future.bak"
+const TEST_FUTURE_RESTORE := "user://fortress_regression_future.restore"
+const TEST_ROLLBACK_SAVE := "user://fortress_regression_rollback.cfg"
+const TEST_ROLLBACK_TEMP := "user://fortress_regression_rollback.tmp"
+const TEST_ROLLBACK_BACKUP := "user://fortress_regression_rollback.bak"
+const TEST_ROLLBACK_RESTORE := "user://fortress_regression_rollback.restore"
 const GameScript = preload("res://main.gd")
 
 var failures: int = 0
@@ -14,6 +26,9 @@ func _init() -> void:
 	test_single_enemy_reward()
 	test_old_projectile_generation()
 	test_maximum_gold()
+	test_legacy_save_migration()
+	test_unsupported_future_version()
+	test_final_validation_rollback()
 	SaveManager.delete_save(TEST_SAVE, TEST_TEMP, TEST_BACKUP, TEST_RESTORE)
 	check(SaveManager.save_game({"version":SaveSchema.VERSION, "stage":5, "gold":100}, TEST_SAVE, TEST_TEMP, TEST_BACKUP) == OK, "initial save")
 	check(SaveManager.save_game({"version":SaveSchema.VERSION, "stage":6, "gold":200}, TEST_SAVE, TEST_TEMP, TEST_BACKUP) == OK, "backup-producing save")
@@ -34,6 +49,9 @@ func _init() -> void:
 	check(int(reloaded_without_backup.get("stage", 0)) == 5, "restored main loads without backup")
 	test_structurally_invalid_save()
 	SaveManager.delete_save(TEST_SAVE, TEST_TEMP, TEST_BACKUP, TEST_RESTORE)
+	SaveManager.delete_save(TEST_LEGACY_SAVE, TEST_LEGACY_TEMP, TEST_LEGACY_BACKUP, TEST_LEGACY_RESTORE)
+	SaveManager.delete_save(TEST_FUTURE_SAVE, TEST_FUTURE_TEMP, TEST_FUTURE_BACKUP, TEST_FUTURE_RESTORE)
+	SaveManager.delete_save(TEST_ROLLBACK_SAVE, TEST_ROLLBACK_TEMP, TEST_ROLLBACK_BACKUP, TEST_ROLLBACK_RESTORE)
 	if failures == 0:
 		print("SaveManager regression checks passed.")
 		quit(0)
@@ -99,6 +117,52 @@ func test_maximum_gold() -> void:
 	game.kill_enemy(enemy)
 	check(game.gold == GameScript.MAX_GOLD, "enemy reward respects MAX_GOLD")
 	game.free()
+
+func test_legacy_save_migration() -> void:
+	SaveManager.delete_save(TEST_LEGACY_SAVE, TEST_LEGACY_TEMP, TEST_LEGACY_BACKUP, TEST_LEGACY_RESTORE)
+	var config := ConfigFile.new()
+	config.set_value("progress", "stage", 6)
+	config.set_value("progress", "gold", 350)
+	config.set_value("progress", "fortress", 4)
+	config.set_value("progress", "forge", 5)
+	config.set_value("progress", "barracks", 3)
+	check(config.save(TEST_LEGACY_SAVE) == OK, "legacy save is written")
+	var legacy_data := SaveManager.load_game(TEST_LEGACY_SAVE, TEST_LEGACY_BACKUP, TEST_LEGACY_RESTORE)
+	check(not legacy_data.is_empty() and int(legacy_data.get("stage", 0)) == 6 and int(legacy_data.get("gold", -1)) == 350, "legacy save is accepted")
+	check(SaveManager.is_legacy_save_data(legacy_data) and SaveManager.save_requires_migration(legacy_data), "legacy save requires migration")
+	var game := GameScript.new()
+	game.apply_save_data(legacy_data)
+	check(game.fortress_level == 4 and game.tower_level == 5 and game.barracks_level == 3 and game.barracks_open, "legacy fields are applied")
+	check(SaveManager.save_game(game.build_save_data(), TEST_LEGACY_SAVE, TEST_LEGACY_TEMP, TEST_LEGACY_BACKUP) == OK, "legacy save is migrated")
+	var migrated_data := SaveManager.load_game(TEST_LEGACY_SAVE, TEST_LEGACY_BACKUP, TEST_LEGACY_RESTORE)
+	check(int(migrated_data.get("version", 0)) == SaveSchema.VERSION, "migrated save has current version")
+	check(int(migrated_data.get("fortress_level", 0)) == 4 and int(migrated_data.get("tower_level", 0)) == 5 and int(migrated_data.get("barracks_level", 0)) == 3, "migrated save has current field names")
+	check(not SaveManager.save_requires_migration(migrated_data), "migrated save is not migrated again")
+	game.free()
+
+func test_unsupported_future_version() -> void:
+	SaveManager.delete_save(TEST_FUTURE_SAVE, TEST_FUTURE_TEMP, TEST_FUTURE_BACKUP, TEST_FUTURE_RESTORE)
+	var config := ConfigFile.new()
+	config.set_value("progress", "version", SaveSchema.VERSION + 1)
+	config.set_value("progress", "stage", 10)
+	config.set_value("progress", "gold", 500)
+	check(config.save(TEST_FUTURE_SAVE) == OK, "future-version save is written")
+	var future_data := SaveManager.load_game(TEST_FUTURE_SAVE, TEST_FUTURE_BACKUP, TEST_FUTURE_RESTORE)
+	check(future_data.is_empty(), "future-version save is rejected")
+	check(FileAccess.file_exists(TEST_FUTURE_SAVE), "future-version save is not overwritten")
+	var raw_future := SaveManager.load_data_from_path(TEST_FUTURE_SAVE, "future test")
+	check(raw_future.is_empty(), "future-version save is neither current nor legacy")
+
+func test_final_validation_rollback() -> void:
+	SaveManager.delete_save(TEST_ROLLBACK_SAVE, TEST_ROLLBACK_TEMP, TEST_ROLLBACK_BACKUP, TEST_ROLLBACK_RESTORE)
+	check(SaveManager.save_game({"version":SaveSchema.VERSION, "stage":9, "gold":900}, TEST_ROLLBACK_SAVE, TEST_ROLLBACK_TEMP, TEST_ROLLBACK_BACKUP) == OK, "rollback initial save")
+	check(SaveManager.save_game({"version":SaveSchema.VERSION, "stage":10, "gold":1000}, TEST_ROLLBACK_SAVE, TEST_ROLLBACK_TEMP, TEST_ROLLBACK_BACKUP) == OK, "rollback backup-producing save")
+	SaveManager.regression_force_final_validation_failure = true
+	var failed_save := SaveManager.save_game({"version":SaveSchema.VERSION, "stage":11, "gold":1100}, TEST_ROLLBACK_SAVE, TEST_ROLLBACK_TEMP, TEST_ROLLBACK_BACKUP, TEST_ROLLBACK_RESTORE)
+	SaveManager.regression_force_final_validation_failure = false
+	check(failed_save == ERR_FILE_CORRUPT, "simulated final validation failure returns ERR_FILE_CORRUPT")
+	var rolled_back_data := SaveManager.load_game(TEST_ROLLBACK_SAVE, TEST_ROLLBACK_BACKUP, TEST_ROLLBACK_RESTORE)
+	check(int(rolled_back_data.get("stage", 0)) == 10 and int(rolled_back_data.get("gold", -1)) == 1000, "rollback restores the previous main save")
 
 func test_structurally_invalid_save() -> void:
 	check(SaveManager.save_game({"version":SaveSchema.VERSION, "stage":7, "gold":700}, TEST_SAVE, TEST_TEMP, TEST_BACKUP) == OK, "structural test initial save")
