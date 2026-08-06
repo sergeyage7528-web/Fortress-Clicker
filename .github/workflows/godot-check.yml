@@ -9,17 +9,10 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    container:
+      image: dunkelgrau/godot:4.7.1
     steps:
       - uses: actions/checkout@v4
-      - name: Install Godot 4.7.1
-        run: |
-          curl --fail --location --retry 3 \
-            --output godot.zip \
-            https://github.com/godotengine/godot/releases/download/4.7.1-stable/Godot_v4.7.1-stable_linux.x86_64.zip
-          unzip -q godot.zip -d "$HOME/.local/bin"
-          chmod +x "$HOME/.local/bin/Godot_v4.7.1-stable_linux.x86_64"
-          ln -s "$HOME/.local/bin/Godot_v4.7.1-stable_linux.x86_64" "$HOME/.local/bin/godot"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Check project loads
         run: godot --headless --path . --editor --quit
       - name: Save manager regression tests
