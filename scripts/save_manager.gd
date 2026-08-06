@@ -23,6 +23,10 @@ static var regression_force_final_validation_failure: bool = false
 static var last_loaded_kind: SaveDataKind = SaveDataKind.INVALID
 
 static func save_game(data: Dictionary, save_path := SAVE_PATH, temp_path := TEMP_PATH, backup_path := BACKUP_PATH, restore_path := RESTORE_PATH) -> Error:
+	var raw_main_data := read_data_from_path(save_path, "текущее основное")
+	if detect_save_data_kind(raw_main_data) == SaveDataKind.FUTURE:
+		push_warning("Сохранение создано более новой версией игры и не может быть перезаписано.")
+		return ERR_UNAVAILABLE
 	var temp_path_absolute := ProjectSettings.globalize_path(temp_path)
 	if FileAccess.file_exists(temp_path):
 		var cleanup_temp_error := DirAccess.remove_absolute(temp_path_absolute)
@@ -42,11 +46,6 @@ static func save_game(data: Dictionary, save_path := SAVE_PATH, temp_path := TEM
 		return ERR_FILE_CORRUPT
 	var main_path := ProjectSettings.globalize_path(save_path)
 	var backup_path_absolute := ProjectSettings.globalize_path(backup_path)
-	var raw_main_data := read_data_from_path(save_path, "текущее основное")
-	if detect_save_data_kind(raw_main_data) == SaveDataKind.FUTURE:
-		DirAccess.remove_absolute(temp_path_absolute)
-		push_warning("Основное сохранение создано более новой версией игры и не будет перезаписано.")
-		return ERR_UNAVAILABLE
 	var current_main_data := load_data_from_path(save_path, "текущее основное")
 	if not current_main_data.is_empty():
 		if FileAccess.file_exists(backup_path):
@@ -166,8 +165,9 @@ static func is_legacy_save_data(data: Dictionary) -> bool:
 	return not data.is_empty() and not data.has("version") and has_valid_stage_and_gold(data)
 
 static func detect_save_data_kind(data: Dictionary) -> SaveDataKind:
-	if is_legacy_save_data(data): return SaveDataKind.LEGACY
-	if not data.has("version") or not is_numeric_value(data["version"]): return SaveDataKind.INVALID
+	if data.is_empty() or not has_valid_stage_and_gold(data): return SaveDataKind.INVALID
+	if not data.has("version"): return SaveDataKind.LEGACY
+	if not is_numeric_value(data["version"]): return SaveDataKind.INVALID
 	if data["version"] > MAX_SAVE_VERSION: return SaveDataKind.FUTURE
 	if is_current_save_data(data): return SaveDataKind.CURRENT
 	return SaveDataKind.INVALID
@@ -179,7 +179,7 @@ static func save_requires_migration(data: Dictionary) -> bool:
 static func validate_save_data(data: Dictionary) -> bool:
 	return is_current_save_data(data) or is_legacy_save_data(data)
 
-static func read_data_from_path(path: String, source_name: String) -> Dictionary:
+static func read_data_from_path(path: String, source_name: String = "сохранение") -> Dictionary:
 	if not FileAccess.file_exists(path): return {}
 	var config := ConfigFile.new()
 	var load_error := config.load(path)
@@ -194,7 +194,7 @@ static func read_data_from_path(path: String, source_name: String) -> Dictionary
 		data[key] = config.get_value(SECTION, key)
 	return data
 
-static func load_data_from_path(path: String, source_name: String) -> Dictionary:
+static func load_data_from_path(path: String, source_name: String = "сохранение") -> Dictionary:
 	var data := read_data_from_path(path, source_name)
 	if data.is_empty(): return {}
 	if detect_save_data_kind(data) == SaveDataKind.FUTURE:
