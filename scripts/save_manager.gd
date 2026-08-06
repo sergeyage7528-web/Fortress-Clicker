@@ -10,9 +10,17 @@ const MAX_SAVE_VERSION := SaveSchema.VERSION
 const MAX_STAGE := SaveSchema.MAX_STAGE
 const MAX_GOLD := SaveSchema.MAX_GOLD
 
+enum SaveDataKind {
+	INVALID,
+	LEGACY,
+	CURRENT,
+	FUTURE
+}
+
 # Используется только из изолированного регрессионного теста: в игровом UI этот
 # переключатель недоступен и в сохранения не попадает.
 static var regression_force_final_validation_failure: bool = false
+static var last_loaded_kind: SaveDataKind = SaveDataKind.INVALID
 
 static func save_game(data: Dictionary, save_path := SAVE_PATH, temp_path := TEMP_PATH, backup_path := BACKUP_PATH, restore_path := RESTORE_PATH) -> Error:
 	var temp_path_absolute := ProjectSettings.globalize_path(temp_path)
@@ -34,6 +42,11 @@ static func save_game(data: Dictionary, save_path := SAVE_PATH, temp_path := TEM
 		return ERR_FILE_CORRUPT
 	var main_path := ProjectSettings.globalize_path(save_path)
 	var backup_path_absolute := ProjectSettings.globalize_path(backup_path)
+	var raw_main_data := read_data_from_path(save_path, "текущее основное")
+	if detect_save_data_kind(raw_main_data) == SaveDataKind.FUTURE:
+		DirAccess.remove_absolute(temp_path_absolute)
+		push_warning("Основное сохранение создано более новой версией игры и не будет перезаписано.")
+		return ERR_UNAVAILABLE
 	var current_main_data := load_data_from_path(save_path, "текущее основное")
 	if not current_main_data.is_empty():
 		if FileAccess.file_exists(backup_path):
@@ -80,10 +93,22 @@ static func save_game(data: Dictionary, save_path := SAVE_PATH, temp_path := TEM
 	return OK
 
 static func load_game(save_path := SAVE_PATH, backup_path := BACKUP_PATH, restore_path := RESTORE_PATH) -> Dictionary:
-	var main_data := load_data_from_path(save_path, "основное")
-	if not main_data.is_empty(): return main_data
+	last_loaded_kind = SaveDataKind.INVALID
+	var main_data := read_data_from_path(save_path, "основное")
+	var main_kind := detect_save_data_kind(main_data)
+	if main_kind == SaveDataKind.CURRENT or main_kind == SaveDataKind.LEGACY:
+		last_loaded_kind = main_kind
+		return main_data
+	if main_kind == SaveDataKind.FUTURE:
+		push_warning("Основное сохранение создано более новой версией игры. Оно не будет перезаписано.")
+		var future_backup_data := load_data_from_path(backup_path, "резервное")
+		if future_backup_data.is_empty(): return {}
+		# Keep FUTURE here so callers cannot migrate the backup over the newer main file.
+		last_loaded_kind = SaveDataKind.FUTURE
+		return future_backup_data
 	var backup_data := load_data_from_path(backup_path, "резервное")
 	if backup_data.is_empty(): return {}
+	last_loaded_kind = detect_save_data_kind(backup_data)
 	if not restore_main_from_backup(save_path, backup_path, restore_path):
 		push_warning("Основное сохранение не удалось восстановить, используются данные резервной копии.")
 	return backup_data
@@ -140,6 +165,13 @@ static func is_current_save_data(data: Dictionary) -> bool:
 static func is_legacy_save_data(data: Dictionary) -> bool:
 	return not data.is_empty() and not data.has("version") and has_valid_stage_and_gold(data)
 
+static func detect_save_data_kind(data: Dictionary) -> SaveDataKind:
+	if is_legacy_save_data(data): return SaveDataKind.LEGACY
+	if not data.has("version") or not is_numeric_value(data["version"]): return SaveDataKind.INVALID
+	if data["version"] > MAX_SAVE_VERSION: return SaveDataKind.FUTURE
+	if is_current_save_data(data): return SaveDataKind.CURRENT
+	return SaveDataKind.INVALID
+
 static func save_requires_migration(data: Dictionary) -> bool:
 	if is_legacy_save_data(data): return true
 	return data.has("version") and is_numeric_value(data["version"]) and int(data["version"]) < MAX_SAVE_VERSION
@@ -147,7 +179,7 @@ static func save_requires_migration(data: Dictionary) -> bool:
 static func validate_save_data(data: Dictionary) -> bool:
 	return is_current_save_data(data) or is_legacy_save_data(data)
 
-static func load_data_from_path(path: String, source_name: String) -> Dictionary:
+static func read_data_from_path(path: String, source_name: String) -> Dictionary:
 	if not FileAccess.file_exists(path): return {}
 	var config := ConfigFile.new()
 	var load_error := config.load(path)
@@ -160,7 +192,12 @@ static func load_data_from_path(path: String, source_name: String) -> Dictionary
 	var data: Dictionary = {}
 	for key in config.get_section_keys(SECTION):
 		data[key] = config.get_value(SECTION, key)
-	if data.has("version") and is_numeric_value(data["version"]) and data["version"] > MAX_SAVE_VERSION:
+	return data
+
+static func load_data_from_path(path: String, source_name: String) -> Dictionary:
+	var data := read_data_from_path(path, source_name)
+	if data.is_empty(): return {}
+	if detect_save_data_kind(data) == SaveDataKind.FUTURE:
 		push_warning("%s сохранение создано более новой версией игры и не будет перезаписано." % source_name.capitalize())
 		return {}
 	if not validate_save_data(data):

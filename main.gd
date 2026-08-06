@@ -10,6 +10,9 @@ const MAX_HERO_UPGRADE_LEVEL: int = 10000
 const MAX_PRESTIGE_UPGRADE_LEVEL: int = 1000
 const MAX_STAGE: int = SaveSchema.MAX_STAGE
 const MAX_GOLD: int = SaveSchema.MAX_GOLD
+# IEEE-754 doubles represent every integer only through this value.  Gameplay
+# formulas return floats, while saves and the gold balance retain MAX_GOLD.
+const MAX_FLOAT_GOLD: int = 9_007_199_254_740_991
 const MAX_COST_EXPONENT: int = 100
 const STAGE_VICTORY_DELAY := 1.8
 const WAVE_DELAY := 1.2
@@ -122,11 +125,11 @@ func tower_crit_multiplier() -> float: return 1.5 + tower_crit_mult_level * 0.25
 
 func growing_cost(base: int, growth: float, level: int) -> int:
 	var safe_level := clampi(level, 0, MAX_COST_EXPONENT)
-	return int(minf(float(MAX_GOLD), base * pow(growth, safe_level)))
+	return int(minf(float(MAX_FLOAT_GOLD), base * pow(growth, safe_level)))
 
 func capped_gold_value(value: float) -> int:
 	if is_nan(value) or is_inf(value): return MAX_GOLD
-	return int(clampf(round(value), 0.0, float(MAX_GOLD)))
+	return int(clampf(round(value), 0.0, float(MAX_FLOAT_GOLD)))
 
 func add_gold(amount: int) -> void:
 	if amount <= 0: return
@@ -619,10 +622,10 @@ func test_skip_wave() -> void:
 	else: test_start_specific_wave(wave + 1)
 
 func test_next_stage() -> void:
-	debug_skip_to_next_stage()
+	debug_advance_stage()
 	test_finish("Подготовлена стадия %d" % stage)
 
-func debug_skip_to_next_stage() -> void:
+func debug_advance_stage() -> void:
 	if not process_stage_completion(0): return
 	enemies.clear()
 	projectiles.clear()
@@ -1080,8 +1083,12 @@ func apply_save_data(data: Dictionary) -> void:
 func load_progress() -> void:
 	var data: Dictionary = SaveManager.load_game()
 	if data.is_empty(): return
+	var loaded_kind := SaveManager.last_loaded_kind
 	apply_save_data(data)
-	if SaveManager.save_requires_migration(data): save_progress(true)
+	if loaded_kind == SaveManager.SaveDataKind.LEGACY:
+		var migration_error := SaveManager.save_game(build_save_data())
+		if migration_error != OK:
+			push_warning("Старое сохранение загружено, но не удалось обновить его формат.")
 
 func _draw() -> void:
 	draw_texture_rect(DARK_FOREST_BACKGROUND, Rect2(0, 0, W, H), false)
