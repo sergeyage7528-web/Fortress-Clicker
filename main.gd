@@ -24,6 +24,8 @@ const PRESTIGE_UNLOCK_STAGE: int = 10
 const PRESTIGE_DAMAGE_MAX_LEVEL: int = 20
 const PRESTIGE_GOLD_MAX_LEVEL: int = 20
 const PRESTIGE_START_GOLD_MAX_LEVEL: int = 10
+const PRESTIGE_CRITICAL_MAX_LEVEL: int = 15
+const PRESTIGE_MONSTER_DAMAGE_MAX_LEVEL: int = 10
 const STARTING_GOLD_VALUES: Array[int] = [0, 50, 150, 300, 500, 800, 1200, 1800, 2600, 3600, 5000]
 const BATTLEFIELD_RECT := Rect2(0, 128, W, 576)
 const NORMAL_MESSAGE_COLOR := Color("#d9c7a1")
@@ -43,6 +45,8 @@ var prestige_unlocked := false
 var prestige_damage_level: int = 0
 var prestige_gold_level: int = 0
 var prestige_start_gold_level: int = 0
+var prestige_critical_level: int = 0
+var prestige_monster_damage_level: int = 0
 var prestige_in_progress := false
 var enemies_killed: int = 0
 var current_enemy_type := ""
@@ -91,6 +95,7 @@ var gold_label: Label
 var stage_label: Label
 var message_label: Label
 var enemy_label: Label
+var player_stats_label: Label
 var tab_content: Panel
 var upgrade_scroll: ScrollContainer
 var upgrade_list: VBoxContainer
@@ -120,8 +125,26 @@ func prestige_gold_multiplier() -> float: return 1.0 + prestige_gold_level * 0.1
 func prestige_starting_gold() -> int: return STARTING_GOLD_VALUES[prestige_start_gold_index()]
 func prestige_start_gold_index() -> int: return clampi(prestige_start_gold_level, 0, PRESTIGE_START_GOLD_MAX_LEVEL)
 func tower_damage() -> float: return (24.0 + tower_level * 12.0) * prestige_damage_multiplier()
-func tower_crit_chance() -> float: return minf(1.0, tower_crit_level * 0.04)
+func tower_crit_chance() -> float: return minf(1.0, tower_crit_level * 0.04 + prestige_critical_level * 0.01)
 func tower_crit_multiplier() -> float: return 1.5 + tower_crit_mult_level * 0.25
+func enemy_type_damage_multiplier() -> float: return 1.0 + prestige_monster_damage_level * 0.15 if current_enemy_type in ["elite", "boss"] else 1.0
+
+func final_auto_damage_per_second() -> float:
+	var damage := 0.0
+	if hero_alive:
+		var stats := hero_stats(active_hero)
+		damage += float(stats.damage) / maxf(0.01, float(stats.cooldown))
+	if not garrison_units.is_empty():
+		for unit in garrison_units:
+			if unit.alive: damage += garrison_damage() * (1.25 if unit.kind == "knight" else .85 if unit.kind == "archer" else 1.0) / garrison_cooldown()
+	return damage
+
+func format_number(value: float) -> String:
+	var absolute := absf(value)
+	if absolute >= 1_000_000_000.0: return "%.2fB" % (value / 1_000_000_000.0)
+	if absolute >= 1_000_000.0: return "%.2fM" % (value / 1_000_000.0)
+	if absolute >= 1_000.0: return "%.2fK" % (value / 1_000.0)
+	return str(int(round(value)))
 
 func growing_cost(base: int, growth: float, level: int) -> int:
 	var safe_level := clampi(level, 0, MAX_COST_EXPONENT)
@@ -414,7 +437,7 @@ func apply_damage_to_wave(damage: float, kind: String, crit: bool) -> void:
 	var damage_text := "КРИТ! -%d" % damage if crit else "-%d" % damage
 	add_effect(Vector2(first_enemy.x, first_enemy.y - 38), damage_text, damage_color)
 	if kind == "magic": add_effect(Vector2(first_enemy.x, first_enemy.y), "✦", Color("#c799ff"))
-	var remaining_damage := damage
+	var remaining_damage := damage * enemy_type_damage_multiplier()
 	while remaining_damage > 0.0 and not enemies.is_empty():
 		var enemy: Dictionary = enemies[0]
 		var dealt_damage := minf(remaining_damage, maxf(0.0, enemy.hp))
@@ -501,6 +524,7 @@ func build_ui() -> void:
 	var root := Control.new(); root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT); root.mouse_filter = Control.MOUSE_FILTER_PASS; ui.add_child(root)
 	stage_label = make_label(Vector2(15, 12), Vector2(510, 54), 18, Color("#f5dfa8")); root.add_child(stage_label)
 	info_label = make_label(Vector2(15, 47), Vector2(510, 28), 15, Color("#e6d7bd")); root.add_child(info_label)
+	player_stats_label = make_label(Vector2(15, 73), Vector2(510, 20), 11, Color("#c8d8e8")); root.add_child(player_stats_label)
 	message_label = make_label(Vector2(30, 98), Vector2(480, 30), 18, NORMAL_MESSAGE_COLOR); message_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; root.add_child(message_label)
 	enemy_label = make_label(Vector2(24, 128), Vector2(492, 26), 14, Color("#e6d7bd")); enemy_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; root.add_child(enemy_label)
 	gold_label = make_label(Vector2(18, 674), Vector2(500, 26), 18, Color("#ffd561")); root.add_child(gold_label)
@@ -851,6 +875,12 @@ func build_prestige_tab() -> void:
 	var start_maxed := prestige_start_gold_level >= PRESTIGE_START_GOLD_MAX_LEVEL
 	var next_start_level := mini(PRESTIGE_START_GOLD_MAX_LEVEL, prestige_start_gold_level + 1)
 	add_prestige_button("Запасы крепости ур.%d/%d\nСтарт: %d → %d золота | %s" % [prestige_start_gold_level, PRESTIGE_START_GOLD_MAX_LEVEL, prestige_starting_gold(), STARTING_GOLD_VALUES[next_start_level], prestige_price_text(start_cost, start_maxed)], buy_prestige_start_gold_upgrade, can_buy_prestige_upgrades() and not start_maxed and heart_shards >= start_cost)
+	var critical_cost := get_prestige_upgrade_cost(prestige_critical_level)
+	var critical_maxed := prestige_critical_level >= PRESTIGE_CRITICAL_MAX_LEVEL
+	add_prestige_button("Наследие воина ур.%d/%d\nКрит: +%d%% → +%d%% | %s" % [prestige_critical_level, PRESTIGE_CRITICAL_MAX_LEVEL, prestige_critical_level, mini(PRESTIGE_CRITICAL_MAX_LEVEL, prestige_critical_level + 1), prestige_price_text(critical_cost, critical_maxed)], buy_prestige_critical_upgrade, can_buy_prestige_upgrades() and not critical_maxed and heart_shards >= critical_cost)
+	var monster_cost := get_prestige_upgrade_cost(prestige_monster_damage_level)
+	var monster_maxed := prestige_monster_damage_level >= PRESTIGE_MONSTER_DAMAGE_MAX_LEVEL
+	add_prestige_button("Сокрушение чудовищ ур.%d/%d\nЭлиты и боссы: +%d%% → +%d%% | %s" % [prestige_monster_damage_level, PRESTIGE_MONSTER_DAMAGE_MAX_LEVEL, prestige_monster_damage_level * 15, mini(PRESTIGE_MONSTER_DAMAGE_MAX_LEVEL, prestige_monster_damage_level + 1) * 15, prestige_price_text(monster_cost, monster_maxed)], buy_prestige_monster_damage_upgrade, can_buy_prestige_upgrades() and not monster_maxed and heart_shards >= monster_cost)
 
 func upgrade_castle(kind: String) -> void:
 	if kind == "tower_crit" and tower_crit_chance() >= 1.0: return
@@ -978,12 +1008,25 @@ func buy_prestige_start_gold_upgrade() -> void:
 	if heart_shards < cost: return
 	heart_shards -= cost; prestige_start_gold_level += 1; save_progress(true); update_hud(); refresh_tab()
 
+func buy_prestige_critical_upgrade() -> void:
+	if not can_buy_prestige_upgrades() or prestige_critical_level >= PRESTIGE_CRITICAL_MAX_LEVEL: return
+	var cost := get_prestige_upgrade_cost(prestige_critical_level)
+	if heart_shards < cost: return
+	heart_shards -= cost; prestige_critical_level += 1; save_progress(true); update_hud(); refresh_tab()
+
+func buy_prestige_monster_damage_upgrade() -> void:
+	if not can_buy_prestige_upgrades() or prestige_monster_damage_level >= PRESTIGE_MONSTER_DAMAGE_MAX_LEVEL: return
+	var cost := get_prestige_upgrade_cost(prestige_monster_damage_level)
+	if heart_shards < cost: return
+	heart_shards -= cost; prestige_monster_damage_level += 1; save_progress(true); update_hud(); refresh_tab()
+
 func update_hud() -> void:
 	if stage_label == null: return
 	stage_label.text = "СТАДИЯ %d   •   ВОЛНА %d / %d" % [stage, wave, MAX_WAVES_PER_STAGE]
 	var hero_name: String = hero_stats(active_hero).name if hero_alive else "Герой не выбран" if active_hero.is_empty() else "%s (пал)" % hero_stats(active_hero).name
-	info_label.text = "Крепость %d/%d  броня -%d     %s" % [max(0, fortress_hp), max_fortress(), fortress_armor(), hero_name]
-	gold_label.text = "✦ %d золота   •   Осколки Сердца: %d" % [gold, heart_shards]
+	info_label.text = "Крепость %s/%s  броня -%d     %s" % [format_number(maxf(0.0, fortress_hp)), format_number(max_fortress()), fortress_armor(), hero_name]
+	player_stats_label.text = "Тап %s  •  Авто %s/с  •  Крит %d%%  •  ×%.2f" % [format_number(tower_damage()), format_number(final_auto_damage_per_second()), tower_crit_chance() * 100, tower_crit_multiplier()]
+	gold_label.text = "✦ %s золота   •   Осколки Сердца: %s" % [format_number(gold), format_number(heart_shards)]
 	start_stage_button.visible = state == "ready_stage"
 	start_stage_button.text = "Начать стадию %d" % stage
 	retry_button.visible = state == "defeat"
@@ -1009,6 +1052,7 @@ func build_save_data() -> Dictionary:
 		"highest_stage_this_run": highest_stage_this_run, "highest_stage_ever": highest_stage_ever,
 		"heart_shards": heart_shards, "prestige_unlocked": prestige_unlocked,
 		"prestige_damage_level": prestige_damage_level, "prestige_gold_level": prestige_gold_level, "prestige_start_gold_level": prestige_start_gold_level,
+		"prestige_critical_level": prestige_critical_level, "prestige_monster_damage_level": prestige_monster_damage_level,
 		"tower_level": tower_level, "tower_crit_level": tower_crit_level, "tower_crit_mult_level": tower_crit_mult_level,
 		"fortress_level": fortress_level, "fortress_armor_level": fortress_armor_level,
 		"barracks_open": barracks_open, "barracks_level": barracks_level,
@@ -1047,6 +1091,8 @@ func apply_save_data(data: Dictionary) -> void:
 	prestige_damage_level = load_int_clamped(data, "prestige_damage_level", 0, 0, mini(PRESTIGE_DAMAGE_MAX_LEVEL, MAX_PRESTIGE_UPGRADE_LEVEL))
 	prestige_gold_level = load_int_clamped(data, "prestige_gold_level", 0, 0, mini(PRESTIGE_GOLD_MAX_LEVEL, MAX_PRESTIGE_UPGRADE_LEVEL))
 	prestige_start_gold_level = load_int_clamped(data, "prestige_start_gold_level", 0, 0, mini(PRESTIGE_START_GOLD_MAX_LEVEL, MAX_PRESTIGE_UPGRADE_LEVEL))
+	prestige_critical_level = load_int_clamped(data, "prestige_critical_level", 0, 0, PRESTIGE_CRITICAL_MAX_LEVEL)
+	prestige_monster_damage_level = load_int_clamped(data, "prestige_monster_damage_level", 0, 0, PRESTIGE_MONSTER_DAMAGE_MAX_LEVEL)
 	var version := load_int_clamped(data, "version", 0, 0, SAVE_VERSION)
 	if version == 0:
 		fortress_level = load_int_clamped(data, "fortress", 1, 1, MAX_STANDARD_UPGRADE_LEVEL); tower_level = load_int_clamped(data, "forge", 1, 1, MAX_STANDARD_UPGRADE_LEVEL)

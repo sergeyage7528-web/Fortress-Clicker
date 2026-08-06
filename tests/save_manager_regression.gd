@@ -26,6 +26,7 @@ func _init() -> void:
 	test_single_enemy_reward()
 	test_old_projectile_generation()
 	test_maximum_gold()
+	test_prestige_combat_bonuses_and_save_data()
 	test_legacy_save_migration()
 	test_unsupported_future_version()
 	test_final_validation_rollback()
@@ -116,6 +117,25 @@ func test_maximum_gold() -> void:
 	game.enemies.append(enemy)
 	game.kill_enemy(enemy)
 	check(game.gold == GameScript.MAX_GOLD, "enemy reward respects MAX_GOLD")
+	game.free()
+
+func test_prestige_combat_bonuses_and_save_data() -> void:
+	var game := GameScript.new()
+	game.tower_crit_level = 2
+	game.prestige_critical_level = 5
+	check(is_equal_approx(game.tower_crit_chance(), 0.13), "prestige critical bonus is applied once")
+	game.prestige_monster_damage_level = 3
+	game.current_enemy_type = "elite"
+	check(is_equal_approx(game.enemy_type_damage_multiplier(), 1.45), "prestige monster bonus applies to elites")
+	game.current_enemy_type = "normal"
+	check(is_equal_approx(game.enemy_type_damage_multiplier(), 1.0), "prestige monster bonus skips normal enemies")
+	check(game.format_number(1250.0) == "1.25K" and game.format_number(1_500_000.0) == "1.50M", "large number formatting is compact")
+	var saved := game.build_save_data()
+	check(int(saved.get("prestige_critical_level", -1)) == 5 and int(saved.get("prestige_monster_damage_level", -1)) == 3, "new prestige levels are saved")
+	var restored := GameScript.new()
+	restored.apply_save_data(saved)
+	check(restored.prestige_critical_level == 5 and restored.prestige_monster_damage_level == 3, "new prestige levels are restored")
+	restored.free()
 	game.free()
 
 func test_legacy_save_migration() -> void:
