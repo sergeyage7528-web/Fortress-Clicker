@@ -9,10 +9,20 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    container:
-      image: dunkelgrau/godot:4.7.1
     steps:
       - uses: actions/checkout@v4
+      - name: Install Godot 4.7.1
+        run: |
+          mkdir -p "$RUNNER_TEMP/godot"
+          wget --quiet --output-document="$RUNNER_TEMP/godot.zip" \
+            https://github.com/godotengine/godot/releases/download/4.7.1-stable/Godot_v4.7.1-stable_linux.x86_64.zip
+          unzip -j -q "$RUNNER_TEMP/godot.zip" -d "$RUNNER_TEMP/godot"
+          GODOT_BIN="$(find "$RUNNER_TEMP/godot" -maxdepth 1 -type f -name 'Godot_*_linux.x86_64' -print -quit)"
+          test -n "$GODOT_BIN"
+          chmod +x "$GODOT_BIN"
+          ln -sf "$GODOT_BIN" "$RUNNER_TEMP/godot/godot"
+          echo "$RUNNER_TEMP/godot" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/godot/godot" --version
       - name: Check project loads
         run: godot --headless --path . --editor --quit
       - name: Save manager regression tests
