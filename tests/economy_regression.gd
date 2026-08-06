@@ -29,6 +29,7 @@ func _init() -> void:
 	if failures == 0:
 		print("Economy regression checks passed.")
 		quit(0)
+		return
 	quit(1)
 
 func check(condition: bool, description: String) -> void:
